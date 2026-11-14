@@ -19,6 +19,7 @@ final class PromptenderCoordinator: ObservableObject {
     let compilerEngine: PromptCompilerEngine
     let flightEngine: FlightEngine
     let recipeStore: RecipeStore
+    let wildcardStore: WildcardStore
     let secretStore: SecretStoreProtocol
     let dexDiffusionClient: DexDiffusionClient
     let providerRouter: ProviderAPIRouter
@@ -38,8 +39,11 @@ final class PromptenderCoordinator: ObservableObject {
     @Published var parameterOverrides: TechnicalParameterSet = TechnicalParameterSet()
     @Published var manualLocks: [String] = []
     @Published var newLockDraft: String = ""
+    @Published var expandWildcardsOnMix: Bool = false
 
     @Published var customRecipes: [RecipeProfile] = []
+    @Published private(set) var wildcardBanks: [WildcardBankRecord] = []
+    @Published var wildcardSyncDirectoryPath: String = ""
     @Published var flightSelectedRecipeIDs: Set<String> = [
         "dexdiffusion-flux2-klein-4b",
         "xai-grok-imagine-image-2.0",
@@ -69,6 +73,7 @@ final class PromptenderCoordinator: ObservableObject {
         compilerEngine: PromptCompilerEngine = PromptCompilerEngine(),
         flightEngine: FlightEngine = FlightEngine(),
         recipeStore: RecipeStore = RecipeStore(),
+        wildcardStore: WildcardStore = WildcardStore(),
         secretStore: SecretStoreProtocol = KeychainSecretStore(),
         dexDiffusionClient: DexDiffusionClient = DexDiffusionClient(),
         importService: DexCraftImportService = DexCraftImportService()
@@ -76,12 +81,15 @@ final class PromptenderCoordinator: ObservableObject {
         self.compilerEngine = compilerEngine
         self.flightEngine = flightEngine
         self.recipeStore = recipeStore
+        self.wildcardStore = wildcardStore
         self.secretStore = secretStore
         self.dexDiffusionClient = dexDiffusionClient
         self.providerRouter = ProviderAPIRouter(secretStore: secretStore)
         self.importService = importService
 
         self.customRecipes = recipeStore.loadCustomRecipes()
+        self.wildcardSyncDirectoryPath = wildcardStore.loadSyncConfig().externalSyncDirectoryPath
+        self.wildcardBanks = wildcardStore.loadAllLocalBanks()
         refreshKeychainStatuses(performKeychainRead: false)
         recomputeReadinessMap()
     }
@@ -111,8 +119,12 @@ final class PromptenderCoordinator: ObservableObject {
             }
         }
 
+        let effectiveInput = expandWildcardsOnMix
+            ? wildcardStore.expandTokens(in: rawInput, banks: wildcardBanks)
+            : rawInput
+
         let ir = compilerEngine.parser.parse(
-            rawInput: rawInput,
+            rawInput: effectiveInput,
             hintedIntent: hintedIntent,
             attachedAssets: attachedAssets,
             parameterOverrides: parameterOverrides,
@@ -132,6 +144,159 @@ final class PromptenderCoordinator: ObservableObject {
         lastResult = compiled
         statusBanner = "\(recipe.name) · \(compiled.proofReport.summaryBadge) · \(compiled.compilationDurationMs) ms"
         return compiled
+    }
+
+    func expandWildcardTokens(in text: String, seed: UInt64? = nil) -> String {
+        wildcardStore.expandTokens(in: text, banks: wildcardBanks, seed: seed)
+    }
+
+    func setWildcardSyncDirectory(_ path: String) {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        var config = wildcardStore.loadSyncConfig()
+        config.externalSyncDirectoryPath = trimmed
+        wildcardStore.saveSyncConfig(config)
+        wildcardSyncDirectoryPath = trimmed
+        mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
+        statusBanner = trimmed.isEmpty
+            ? "Cleared external wildcard sync folder."
+            : "Synced local wildcards with \(URL(fileURLWithPath: trimmed).lastPathComponent)."
+    }
+
+    func loadWildcardBankDetail(name: String) async -> WildcardBankRecord? {
+        if let detail = try? await dexDiffusionClient.fetchWildcardDetail(name: name, all: true) {
+            let record = WildcardBankRecord(
+                name: detail.name,
+                items: detail.items,
+                description: detail.description,
+                tags: detail.tags,
+                source: .dexterFusion,
+                isFullDetailLoaded: true,
+                previewCount: detail.count
+            )
+            upsertWildcardRecordInMemory(record)
+            return record
+        }
+        return wildcardBanks.first { $0.id == name.lowercased() }
+    }
+
+    func saveWildcardBank(name: String, items: [String], description: String, tags: [String]) async {
+        do {
+            let cleanItems = wildcardStore.sanitizeItems(items)
+            let localSaved = try wildcardStore.saveBankLocally(
+                name: name,
+                items: cleanItems,
+                description: description,
+                tags: tags,
+                source: .localUser,
+                mirrorToSyncFolder: true
+            )
+
+            var pushedRemote = false
+            if (try? await dexDiffusionClient.saveWildcardBank(
+                name: localSaved.name,
+                items: localSaved.items,
+                description: localSaved.description,
+                tags: localSaved.tags
+            )) != nil {
+                pushedRemote = true
+            }
+
+            let finalRecord = WildcardBankRecord(
+                name: localSaved.name,
+                items: localSaved.items,
+                description: localSaved.description,
+                tags: localSaved.tags,
+                source: pushedRemote ? .dexterFusion : .localUser,
+                isFullDetailLoaded: true,
+                previewCount: localSaved.count
+            )
+            upsertWildcardRecordInMemory(finalRecord)
+            statusBanner = pushedRemote
+                ? "Saved & synced wildcard \"\(localSaved.name)\" (\(localSaved.count) items) to Dexter Fusion."
+                : "Saved wildcard \"\(localSaved.name)\" (\(localSaved.count) items) locally."
+        } catch {
+            statusBanner = "Wildcard save failed: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteWildcardBank(name: String) async {
+        wildcardStore.deleteBankLocally(name: name, removeFromSyncFolder: !wildcardSyncDirectoryPath.isEmpty)
+        wildcardBanks.removeAll { $0.id == name.lowercased() }
+
+        var removedRemote = false
+        if (try? await dexDiffusionClient.deleteWildcardBank(name: name)) != nil {
+            removedRemote = true
+        }
+        mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
+        statusBanner = removedRemote
+            ? "Removed wildcard \"\(name)\" locally & in Dexter Fusion."
+            : "Removed local wildcard \"\(name)\"."
+    }
+
+    func savePromptQuickly(
+        title: String,
+        body: String,
+        saveToLibrary: Bool,
+        saveAsTemplate: Bool,
+        into viewModel: PromptEngineViewModel
+    ) {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveTitle = trimmedTitle.isEmpty ? "Mix — \(activeRecipe.name)" : trimmedTitle
+        let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBody.isEmpty else {
+            statusBanner = "Nothing to save yet."
+            return
+        }
+
+        if saveToLibrary {
+            viewModel.createPromptLibraryPrompt(title: effectiveTitle, body: trimmedBody)
+        }
+        if saveAsTemplate {
+            let previousInput = viewModel.roughInput
+            viewModel.roughInput = trimmedBody
+            viewModel.templateNameDraft = effectiveTitle
+            _ = viewModel.saveCurrentAsTemplate(category: selectedDestination.shortName, tags: [activeRecipe.modelID])
+            viewModel.roughInput = previousInput
+        }
+        statusBanner = "Saved prompt \"\(effectiveTitle)\"."
+    }
+
+    private func upsertWildcardRecordInMemory(_ record: WildcardBankRecord) {
+        if let idx = wildcardBanks.firstIndex(where: { $0.id == record.id }) {
+            wildcardBanks[idx] = record
+        } else {
+            wildcardBanks.append(record)
+        }
+        wildcardBanks.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func mergeWildcardCatalog(remoteBanks: [DexDiffusionWildcardBank]) {
+        var map: [String: WildcardBankRecord] = [:]
+        for local in wildcardStore.loadAllLocalBanks() {
+            map[local.id] = local
+        }
+        for remote in remoteBanks {
+            let key = remote.name.lowercased()
+            if let existing = map[key], existing.isFullDetailLoaded && !existing.items.isEmpty && existing.count == remote.count {
+                // Keep loaded items while updating source badge to Dexter Fusion
+                var updated = existing
+                updated.source = .dexterFusion
+                updated.description = remote.description.isEmpty ? existing.description : remote.description
+                updated.tags = remote.tags.isEmpty ? existing.tags : remote.tags
+                map[key] = updated
+            } else {
+                map[key] = WildcardBankRecord(
+                    name: remote.name,
+                    items: remote.sampleEntries,
+                    description: remote.description,
+                    tags: remote.tags,
+                    source: .dexterFusion,
+                    isFullDetailLoaded: false,
+                    previewCount: remote.count
+                )
+            }
+        }
+        wildcardBanks = map.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func restorePreviousSnapshot() -> String? {
@@ -240,12 +405,13 @@ final class PromptenderCoordinator: ObservableObject {
         dexDiffusionCapabilities = await capsTask
         dexDiffusionWildcards = await wildcardsTask ?? []
         dexDiffusionControlledMaxLength = await maxLenTask
+        mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
         recomputeReadinessMap()
 
         if let caps = dexDiffusionCapabilities {
             statusBanner = caps.reachable
-                ? "DexDiffusion online (\(caps.targets.count) targets synced)"
-                : "DexDiffusion offline · deterministic compiler ready"
+                ? "DexDiffusion online (\(caps.targets.count) targets · \(wildcardBanks.count) wildcard banks)"
+                : "DexDiffusion offline · \(wildcardBanks.count) built-in/local wildcard banks ready"
         }
     }
 

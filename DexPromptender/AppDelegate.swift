@@ -21,6 +21,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }()
 
+    private lazy var appearanceStore: AppearanceSettingsStore = {
+        MainActor.assumeIsolated {
+            AppearanceSettingsStore()
+        }
+    }()
+
     private lazy var viewModel: PromptEngineViewModel = {
         let vm = PromptEngineViewModel()
         vm.onRevealStateChanged = { [weak self] expanded in
@@ -40,6 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setupPopover()
         setupStatusItem()
         setupKeyboardShortcut()
+        Task { @MainActor in
+            await coordinator.refreshDexDiffusionStatus()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -57,22 +66,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         popover.animates = true
         popover.contentSize = collapsedSize
 
-        let rootView = RootPopoverView(viewModel: viewModel, coordinator: coordinator)
+        let rootView = RootPopoverView(viewModel: viewModel, coordinator: coordinator, appearance: appearanceStore)
         popover.contentViewController = NSHostingController(rootView: rootView)
     }
 
     private func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
 
         guard let button = statusItem.button else { return }
-        button.title = "DEX//PROMPTENDER"
+        button.title = ""
+        button.toolTip = "DEX//PROMPTENDER"
         let icon = NSImage(systemSymbolName: "wineglass.fill", accessibilityDescription: "DEX//PROMPTENDER")
             ?? NSImage(systemSymbolName: "hammer.fill", accessibilityDescription: "DEX//PROMPTENDER")
         if let icon {
-            let symbolConfig = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+            let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
             button.image = icon.withSymbolConfiguration(symbolConfig)
             button.image?.isTemplate = true
-            button.imagePosition = .imageLeading
+            button.imagePosition = .imageOnly
         } else {
             button.image = nil
         }
@@ -281,7 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.delegate = self
         panel.isReleasedWhenClosed = false
         panel.contentViewController = NSHostingController(
-            rootView: RootPopoverView(viewModel: viewModel, coordinator: coordinator)
+            rootView: RootPopoverView(viewModel: viewModel, coordinator: coordinator, appearance: appearanceStore)
         )
         panel.center()
         panel.makeKeyAndOrderFront(nil)

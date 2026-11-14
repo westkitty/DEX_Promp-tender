@@ -71,6 +71,36 @@ struct DexDiffusionWildcardBank: Identifiable, Equatable {
     let name: String
     let count: Int
     let sampleEntries: [String]
+    let description: String
+    let tags: [String]
+    let source: String
+
+    init(
+        id: String,
+        name: String,
+        count: Int,
+        sampleEntries: [String],
+        description: String = "",
+        tags: [String] = [],
+        source: String = "dexdiffusion"
+    ) {
+        self.id = id
+        self.name = name
+        self.count = count
+        self.sampleEntries = sampleEntries
+        self.description = description
+        self.tags = tags
+        self.source = source
+    }
+}
+
+struct DexDiffusionWildcardDetail: Equatable {
+    let name: String
+    let count: Int
+    let items: [String]
+    let description: String
+    let tags: [String]
+    let source: String
 }
 
 struct ServeAuthorizationToken {
@@ -222,17 +252,39 @@ final class DexDiffusionClient {
         if let dict = json as? [String: Any], let list = dict["wildcards"] as? [[String: Any]] {
             for item in list {
                 if let name = item["name"] as? String {
-                    let entries = (item["entries"] as? [String]) ?? []
+                    let entries = (item["preview"] as? [String]) ?? (item["entries"] as? [String]) ?? []
                     let count = (item["count"] as? Int) ?? entries.count
-                    banks.append(DexDiffusionWildcardBank(id: name, name: name, count: count, sampleEntries: Array(entries.prefix(5))))
+                    let desc = (item["description"] as? String) ?? ""
+                    let tags = (item["tags"] as? [String]) ?? []
+                    let source = (item["source"] as? String) ?? "dexdiffusion"
+                    banks.append(DexDiffusionWildcardBank(
+                        id: name,
+                        name: name,
+                        count: count,
+                        sampleEntries: Array(entries.prefix(5)),
+                        description: desc,
+                        tags: tags,
+                        source: source
+                    ))
                 }
             }
         } else if let list = json as? [[String: Any]] {
             for item in list {
                 if let name = item["name"] as? String {
-                    let entries = (item["entries"] as? [String]) ?? []
+                    let entries = (item["preview"] as? [String]) ?? (item["entries"] as? [String]) ?? []
                     let count = (item["count"] as? Int) ?? entries.count
-                    banks.append(DexDiffusionWildcardBank(id: name, name: name, count: count, sampleEntries: Array(entries.prefix(5))))
+                    let desc = (item["description"] as? String) ?? ""
+                    let tags = (item["tags"] as? [String]) ?? []
+                    let source = (item["source"] as? String) ?? "dexdiffusion"
+                    banks.append(DexDiffusionWildcardBank(
+                        id: name,
+                        name: name,
+                        count: count,
+                        sampleEntries: Array(entries.prefix(5)),
+                        description: desc,
+                        tags: tags,
+                        source: source
+                    ))
                 }
             }
         } else if let dict = json as? [String: Any] {
@@ -243,6 +295,78 @@ final class DexDiffusionClient {
             }
         }
         return banks
+    }
+
+    func fetchWildcardDetail(name: String, all: Bool = true) async throws -> DexDiffusionWildcardDetail {
+        var components = URLComponents(url: baseURL.appendingPathComponent("api/wildcards/\(name)"), resolvingAgainstBaseURL: false)
+        if all {
+            components?.queryItems = [URLQueryItem(name: "all", value: "1")]
+        }
+        guard let url = components?.url else {
+            throw DexDiffusionClientError.invalidEndpoint
+        }
+        let (data, http) = try await transport.send(URLRequest(url: url))
+        guard (200..<300).contains(http.statusCode),
+              let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw DexDiffusionClientError.serverError(statusCode: http.statusCode, message: String(decoding: data, as: UTF8.self))
+        }
+        return DexDiffusionWildcardDetail(
+            name: (dict["name"] as? String) ?? name,
+            count: (dict["count"] as? Int) ?? 0,
+            items: (dict["items"] as? [String]) ?? [],
+            description: (dict["description"] as? String) ?? "",
+            tags: (dict["tags"] as? [String]) ?? [],
+            source: (dict["source"] as? String) ?? "dexdiffusion"
+        )
+    }
+
+    func saveWildcardBank(
+        name: String,
+        items: [String],
+        description: String = "",
+        tags: [String] = []
+    ) async throws -> (name: String, count: Int) {
+        let url = baseURL.appendingPathComponent("api/wildcards/\(name)")
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "items": items,
+            "description": description,
+            "tags": tags
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, http) = try await transport.send(req)
+        guard (200..<300).contains(http.statusCode) else {
+            throw DexDiffusionClientError.serverError(statusCode: http.statusCode, message: String(decoding: data, as: UTF8.self))
+        }
+        let dict = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        return ((dict["name"] as? String) ?? name, (dict["count"] as? Int) ?? items.count)
+    }
+
+    func deleteWildcardBank(name: String) async throws {
+        let url = baseURL.appendingPathComponent("api/wildcards/\(name)")
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        let (data, http) = try await transport.send(req)
+        guard (200..<300).contains(http.statusCode) else {
+            throw DexDiffusionClientError.serverError(statusCode: http.statusCode, message: String(decoding: data, as: UTF8.self))
+        }
+    }
+
+    func expandWildcardsRemotely(prompt: String) async throws -> String {
+        let url = baseURL.appendingPathComponent("api/wildcards/expand")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["prompt": prompt])
+        let (data, http) = try await transport.send(req)
+        guard (200..<300).contains(http.statusCode),
+              let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let expanded = dict["expanded"] as? String else {
+            throw DexDiffusionClientError.serverError(statusCode: http.statusCode, message: String(decoding: data, as: UTF8.self))
+        }
+        return expanded
     }
 
     func fetchControlledPromptMaxLength() async -> Int? {

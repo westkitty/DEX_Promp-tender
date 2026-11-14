@@ -20,7 +20,8 @@ let package = Package(
             ],
             resources: [
                 .process("Resources/DefaultTemplates.json"),
-                .process("Resources/PromptingPlaybooks.md")
+                .process("Resources/PromptingPlaybooks.md"),
+                .copy("Resources/Wildcards")
             ]
         ),
         .executableTarget(

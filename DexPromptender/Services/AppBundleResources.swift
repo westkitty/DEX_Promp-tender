@@ -11,4 +11,16 @@ enum AppBundleResources {
         return nil
         #endif
     }
+
+    static func wildcardsDirectoryURL() -> URL? {
+        if let mainDir = Bundle.main.url(forResource: "Wildcards", withExtension: nil) {
+            return mainDir
+        }
+        #if SWIFT_PACKAGE
+        if let moduleDir = Bundle.module.url(forResource: "Wildcards", withExtension: nil) {
+            return moduleDir
+        }
+        #endif
+        return nil
+    }
 }

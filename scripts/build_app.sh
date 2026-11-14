@@ -46,6 +46,10 @@ plutil -lint "$CONTENTS_DIR/Info.plist"
 cp "$ROOT_DIR/DexPromptender/Resources/DefaultTemplates.json" "$RESOURCES_DIR/DefaultTemplates.json"
 cp "$ROOT_DIR/DexPromptender/Resources/PromptingPlaybooks.md" "$RESOURCES_DIR/PromptingPlaybooks.md"
 cp "$ROOT_DIR/DexPromptender/Resources/Assets.xcassets/DexCraftWatermark.imageset/DexCraftWatermark.png" "$RESOURCES_DIR/DexCraftWatermark.png"
+if [[ -d "$ROOT_DIR/DexPromptender/Resources/Wildcards" ]]; then
+    mkdir -p "$RESOURCES_DIR/Wildcards"
+    cp -R "$ROOT_DIR/DexPromptender/Resources/Wildcards/." "$RESOURCES_DIR/Wildcards/"
+fi
 
 # Copy SwiftPM resource bundle(s) if built
 for bundle_path in "$ROOT_DIR/.build/release"/*.bundle; do

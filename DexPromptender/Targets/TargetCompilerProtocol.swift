@@ -172,18 +172,29 @@ enum TargetCompilationSupport {
             }
 
             var visualQualities: [String] = []
-            if !ir.ingredients.styleMedium.isEmpty { visualQualities.append("Style: \(ir.ingredients.styleMedium)") }
-            if !ir.ingredients.cameraComposition.isEmpty { visualQualities.append("Camera: \(ir.ingredients.cameraComposition)") }
-            if !ir.ingredients.lightingAtmosphere.isEmpty { visualQualities.append("Lighting: \(ir.ingredients.lightingAtmosphere)") }
+            if !ir.ingredients.styleMedium.isEmpty {
+                visualQualities.append("Style: \(ir.ingredients.styleMedium)")
+            } else if mixMode == .stirred || mixMode == .shaken {
+                visualQualities.append(defaultStyleDirection(for: recipe, shaken: mixMode == .shaken))
+            }
+
+            if !ir.ingredients.cameraComposition.isEmpty {
+                visualQualities.append("Camera: \(ir.ingredients.cameraComposition)")
+            } else if mixMode == .stirred || mixMode == .shaken {
+                visualQualities.append(defaultCameraDirection(for: recipe, shaken: mixMode == .shaken))
+            }
+
+            if !ir.ingredients.lightingAtmosphere.isEmpty {
+                visualQualities.append("Lighting: \(ir.ingredients.lightingAtmosphere)")
+            } else if mixMode == .stirred || mixMode == .shaken {
+                visualQualities.append(defaultLightingDirection(for: recipe, shaken: mixMode == .shaken))
+            }
 
             if mixMode == .shaken {
-                if ir.ingredients.cameraComposition.isEmpty {
-                    visualQualities.append("Framing: deliberate subject hierarchy with clean foreground/background separation")
-                }
-                if ir.ingredients.lightingAtmosphere.isEmpty {
-                    visualQualities.append("Lighting: cohesive directional light and natural tonal depth")
-                }
-                provenance.append(ProvenanceEntry(source: .heuristicTransform, section: "Visual Polish", note: "Applied Shaken framing and lighting clarity without overriding locks"))
+                visualQualities.append("Materiality & Depth: crisp surface micro-textures, natural optical depth-of-field, and cohesive palette separation across foreground and background")
+                provenance.append(ProvenanceEntry(source: .heuristicTransform, section: "Creative Visual Expansion", note: "Applied Shaken target art direction, lighting choreography, and optical depth without overriding locks"))
+            } else if mixMode == .stirred {
+                provenance.append(ProvenanceEntry(source: .heuristicTransform, section: "Balanced Visual Enhancement", note: "Synthesized missing composition, lighting, and material cues tailored to \(recipe.modelID)"))
             }
 
             if !visualQualities.isEmpty {
@@ -295,5 +306,100 @@ enum TargetCompilationSupport {
         var compiled = applyExplicitVariables(joinNonEmpty(sections, separator: "\n\n"), values: variables, resolver: resolver)
         compiled = appendMissingProtectedTokens(to: compiled, ir: ir, negativePrompt: nil)
         return (compiled, provenance)
+    }
+
+    static func defaultStyleDirection(for recipe: RecipeProfile, shaken: Bool) -> String {
+        let model = recipe.modelID.lowercased()
+        switch recipe.destination {
+        case .dexDiffusionImage:
+            if model.contains("pony") {
+                return shaken
+                    ? "Style & Render: rich illustrative lineweight, expressive shading, saturated color separation, clean crisp edges"
+                    : "Style & Render: cohesive illustrative shading and clean silhouettes"
+            }
+            if model.contains("flux") {
+                return shaken
+                    ? "Art Direction: grounded editorial realism with authentic textures, subtle optical grain, and natural tonal transitions"
+                    : "Art Direction: detailed natural prose emphasis on authentic textures and coherent surface materials"
+            }
+            return shaken
+                ? "Visual Fidelity: high-detail photographic craft, rich surface micro-textures, crisp focus on primary subject"
+                : "Visual Fidelity: crisp detail, fine surface textures, clean subject definition"
+        case .openAIImage:
+            return shaken
+                ? "Design & Realism: high-clarity subject isolation, rich surface materiality, disciplined visual hierarchy, legible micro-detail"
+                : "Design & Realism: clean visual hierarchy, crisp material rendering, balanced composition"
+        case .geminiImage:
+            return shaken
+                ? "Editorial Finish: natural photographic realism, authentic fabric/skin/surface detail, organic tonal grading"
+                : "Editorial Finish: grounded photographic detail and natural tonal balance"
+        case .grokImagineImage:
+            return shaken
+                ? "Visual Style: vivid high-contrast storytelling frame, crisp focal clarity, rich environmental detail"
+                : "Visual Style: crisp focal detail and expressive environmental atmosphere"
+        default:
+            return "Style: cohesive visual craft and clear subject emphasis"
+        }
+    }
+
+    static func defaultCameraDirection(for recipe: RecipeProfile, shaken: Bool) -> String {
+        if shaken {
+            return "Composition & Lens: deliberate subject-first framing (35mm–50mm optical perspective), layered foreground/background depth, smooth bokeh falloff"
+        }
+        return "Composition: clean focal hierarchy with intentional framing and balanced negative space"
+    }
+
+    static func defaultLightingDirection(for recipe: RecipeProfile, shaken: Bool) -> String {
+        if shaken {
+            return "Lighting & Atmosphere: sculpted directional key light paired with subtle ambient fill, rim separation along silhouettes, and natural atmospheric depth"
+        }
+        return "Lighting: cohesive directional light with clean shadow definition and tonal depth"
+    }
+
+    /// Runs HeuristicPromptOptimizer + OfflinePromptOptimizer fallback so Stirred/Shaken text prompts
+    /// always receive genuine structural enhancement rather than echoing short drafts verbatim.
+    static func enhanceTextTask(
+        rawInput: String,
+        ir: CanonicalPromptIR,
+        recipe: RecipeProfile,
+        mixMode: MixMode,
+        legacyTarget: PromptTarget,
+        modelFamily: ModelFamily,
+        scenario: ScenarioProfile,
+        variables: [String: String],
+        resolver: VariableResolver
+    ) -> (prompt: String, sectionNote: String) {
+        let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let context = HeuristicOptimizationContext(target: legacyTarget, scenario: scenario)
+        let optimized = HeuristicPromptOptimizer.optimize(trimmed, context: context)
+        let heuristicText = optimized.optimizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let heuristicChangedSubstantially =
+            heuristicText.count >= trimmed.count + 48 &&
+            heuristicText.lowercased() != trimmed.lowercased()
+
+        let built: String
+        let note: String
+        if mixMode == .shaken || !heuristicChangedSubstantially {
+            let structured = OfflinePromptOptimizer().optimize(
+                OptimizationInput(
+                    rawUserPrompt: heuristicChangedSubstantially ? heuristicText : trimmed,
+                    modelFamily: modelFamily,
+                    scenario: scenario,
+                    userOverrides: ir.intentKind == .structuredOutput ? UserOverrideOptions(strictJSONOverride: true) : nil
+                )
+            ).optimizedPrompt
+            built = structured
+            note = mixMode == .shaken
+                ? "Applied full Shaken target engineering + constraint & output structure for \(recipe.modelID)"
+                : "Restructured draft with \(recipe.modelID) goal, execution guidelines, and verification structure"
+        } else {
+            built = heuristicText
+            note = "Applied Heuristic Optimization (\(optimized.selectedCandidateTitle))"
+        }
+
+        let resolved = applyExplicitVariables(built, values: variables, resolver: resolver)
+        let guarded = appendMissingProtectedTokens(to: resolved, ir: ir, negativePrompt: nil)
+        return (guarded, note)
     }
 }

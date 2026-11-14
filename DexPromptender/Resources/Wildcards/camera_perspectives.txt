@@ -1,0 +1,12 @@
+# description: Camera lenses, framing, and angles
+# tags: camera, composition, framing
+eye-level medium shot, 50mm lens
+low-angle wide shot, 24mm lens
+tight close-up portrait, 85mm lens, shallow depth of field
+overhead flat-lay composition
+over-the-shoulder framing, foreground bokeh
+Dutch angle dynamic frame, 35mm cinema lens
+telephoto compressed perspective, 135mm lens
+ultra-wide establishing shot, 14mm lens
+candid three-quarter angle
+macro detail shot, 100mm macro lens

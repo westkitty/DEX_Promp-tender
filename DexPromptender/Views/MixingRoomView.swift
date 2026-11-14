@@ -3,6 +3,7 @@ import SwiftUI
 
 enum PromptenderWorkspaceSection: String, CaseIterable, Identifiable {
     case bar = "Mix"
+    case wildcards = "Wildcards"
     case ingredients = "Ingredients"
     case flight = "Flight"
     case specials = "Specials"
@@ -24,10 +25,15 @@ enum CompiledOutputTab: String, CaseIterable, Identifiable {
 struct MixingRoomView: View {
     @ObservedObject var viewModel: PromptEngineViewModel
     @ObservedObject var coordinator: PromptenderCoordinator
+    @ObservedObject var appearance: AppearanceSettingsStore
     let isDetached: Bool
 
     @State private var activeSection: PromptenderWorkspaceSection = .bar
     @State private var outputTab: CompiledOutputTab = .compiled
+    @State private var isSavePromptPopoverShown: Bool = false
+    @State private var savePromptTitle: String = ""
+    @State private var saveCompiledCopy: Bool = true
+    @State private var alsoSaveAsTemplate: Bool = false
     @FocusState private var isInputFocused: Bool
 
     var body: some View {
@@ -70,13 +76,7 @@ struct MixingRoomView: View {
             Spacer()
 
             Button {
-                let result = coordinator.mixPrompt(
-                    rawInput: viewModel.roughInput,
-                    variables: viewModel.variableValues,
-                    legacyOptions: viewModel.options
-                )
-                viewModel.generatedPrompt = result.compiledPrompt
-                viewModel.isResultPanelVisible = true
+                performMixPrompt()
             } label: {
                 Label("Mix Prompt", systemImage: "wand.and.stars")
                     .font(.caption.weight(.semibold))
@@ -190,6 +190,8 @@ struct MixingRoomView: View {
             if !viewModel.detectedVariables.isEmpty {
                 variablesCard
             }
+        case .wildcards:
+            WildcardsStudioView(coordinator: coordinator, viewModel: viewModel)
         case .ingredients:
             IngredientsAndParamsView(coordinator: coordinator, viewModel: viewModel)
         case .flight:
@@ -199,7 +201,7 @@ struct MixingRoomView: View {
         case .cellar:
             TheCellarView(viewModel: viewModel, coordinator: coordinator)
         case .settings:
-            PromptenderSettingsView(coordinator: coordinator, viewModel: viewModel)
+            PromptenderSettingsView(coordinator: coordinator, viewModel: viewModel, appearance: appearance)
         }
     }
 
@@ -210,6 +212,14 @@ struct MixingRoomView: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
+                if viewModel.roughInput.contains("__") {
+                    Button("Roll Wildcards") {
+                        viewModel.roughInput = coordinator.expandWildcardTokens(in: viewModel.roughInput)
+                        coordinator.statusBanner = "Expanded __wildcard__ tokens in draft."
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
                 if !coordinator.draftSnapshots.isEmpty {
                     Button("Revert Draft") {
                         if let prior = coordinator.restorePreviousSnapshot() {
@@ -218,6 +228,16 @@ struct MixingRoomView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
+                }
+                Button("Save...") {
+                    savePromptTitle = ""
+                    isSavePromptPopoverShown = true
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .disabled(viewModel.roughInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && coordinator.lastResult == nil)
+                .popover(isPresented: $isSavePromptPopoverShown) {
+                    savePromptPopoverContent
                 }
                 Button("Clear") {
                     viewModel.roughInput = ""
@@ -261,13 +281,7 @@ struct MixingRoomView: View {
                 .disabled(viewModel.roughInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                 Button("Mix Prompt") {
-                    let result = coordinator.mixPrompt(
-                        rawInput: viewModel.roughInput,
-                        variables: viewModel.variableValues,
-                        legacyOptions: viewModel.options
-                    )
-                    viewModel.generatedPrompt = result.compiledPrompt
-                    viewModel.isResultPanelVisible = true
+                    performMixPrompt()
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -446,6 +460,13 @@ struct MixingRoomView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
 
+            Button("Save Prompt...") {
+                savePromptTitle = ""
+                isSavePromptPopoverShown = true
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
             Menu("Serve") {
                 Button("Open DexDiffusion Studio (Browser)") {
                     coordinator.openDexDiffusionStudio()
@@ -486,5 +507,74 @@ struct MixingRoomView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(Color.black.opacity(0.18))
+    }
+
+    private func performMixPrompt() {
+        let result = coordinator.mixPrompt(
+            rawInput: viewModel.roughInput,
+            variables: viewModel.variableValues,
+            legacyOptions: viewModel.options
+        )
+        viewModel.generatedPrompt = result.compiledPrompt
+        viewModel.recordCompiledMixHistory(
+            target: result.target,
+            originalInput: viewModel.roughInput,
+            compiledPrompt: result.compiledPrompt
+        )
+        viewModel.isResultPanelVisible = true
+    }
+
+    private var savePromptPopoverContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("SAVE PROMPT")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            TextField("Prompt Title (e.g. Moody Samurai Neon)", text: $savePromptTitle)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+
+            if coordinator.lastResult != nil {
+                Picker("Content", selection: $saveCompiledCopy) {
+                    Text("Compiled Output").tag(true)
+                    Text("Raw Draft").tag(false)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Toggle("Also save as reusable Template", isOn: $alsoSaveAsTemplate)
+                .font(.caption2)
+
+            HStack {
+                Button("Cancel") {
+                    isSavePromptPopoverShown = false
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Spacer()
+
+                Button("Save to Cellar") {
+                    let body: String
+                    if saveCompiledCopy, let compiled = coordinator.lastResult?.compiledPrompt, !compiled.isEmpty {
+                        body = compiled
+                    } else {
+                        body = viewModel.roughInput
+                    }
+                    coordinator.savePromptQuickly(
+                        title: savePromptTitle,
+                        body: body,
+                        saveToLibrary: true,
+                        saveAsTemplate: alsoSaveAsTemplate,
+                        into: viewModel
+                    )
+                    isSavePromptPopoverShown = false
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        }
+        .padding(14)
+        .frame(width: 300)
     }
 }

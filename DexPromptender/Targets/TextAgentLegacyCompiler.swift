@@ -53,21 +53,19 @@ final class TextAgentLegacyCompiler: TargetRecipeCompiler {
                 default: return ir.intentKind == .codingAgent ? .ideCodingAssistant : .generalAssistant
                 }
             }()
-            let context = HeuristicOptimizationContext(target: legacyTarget, scenario: scenario)
-            let optimized = HeuristicPromptOptimizer.optimize(ir.rawInput, context: context)
-            let built = mixMode == .shaken
-                ? OfflinePromptOptimizer().optimize(
-                    OptimizationInput(
-                        rawUserPrompt: optimized.optimizedText,
-                        modelFamily: modelFamily,
-                        scenario: scenario,
-                        userOverrides: nil
-                    )
-                ).optimizedPrompt
-                : optimized.optimizedText
-            let resolved = TargetCompilationSupport.applyExplicitVariables(built, values: variables, resolver: resolver)
-            compiledBody = TargetCompilationSupport.appendMissingProtectedTokens(to: resolved, ir: ir, negativePrompt: nil)
-            provenance.append(ProvenanceEntry(source: .heuristicTransform, section: "Playbook + Heuristics", note: "Compiled with \(legacyTarget.rawValue) domain rules"))
+            let enhanced = TargetCompilationSupport.enhanceTextTask(
+                rawInput: ir.rawInput,
+                ir: ir,
+                recipe: recipe,
+                mixMode: mixMode,
+                legacyTarget: legacyTarget,
+                modelFamily: modelFamily,
+                scenario: scenario,
+                variables: variables,
+                resolver: resolver
+            )
+            compiledBody = enhanced.prompt
+            provenance.append(ProvenanceEntry(source: .heuristicTransform, section: "Playbook + Heuristics", note: enhanced.sectionNote))
         }
 
         let payload: [String: Any] = [

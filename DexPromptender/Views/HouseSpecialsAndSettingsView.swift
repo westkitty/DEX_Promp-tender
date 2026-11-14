@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct HouseSpecialsView: View {
     @ObservedObject var coordinator: PromptenderCoordinator
@@ -200,6 +202,7 @@ struct TheCellarView: View {
 struct PromptenderSettingsView: View {
     @ObservedObject var coordinator: PromptenderCoordinator
     @ObservedObject var viewModel: PromptEngineViewModel
+    @ObservedObject var appearance: AppearanceSettingsStore
 
     @State private var xaiKeyDraft: String = ""
     @State private var openAIKeyDraft: String = ""
@@ -207,11 +210,146 @@ struct PromptenderSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            appearanceCard
             dexDiffusionCard
             keychainAPIKeysCard
             dexCraftMigrationCard
             localGGUFCard
         }
+    }
+
+    private var appearanceCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("APPEARANCE · WATERMARK & BACKGROUND IMAGES")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Reset") {
+                    appearance.resetToDefaults()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+
+            Toggle("Show Center Watermark", isOn: $appearance.settings.isWatermarkEnabled)
+                .font(.caption2)
+
+            if appearance.settings.isWatermarkEnabled {
+                HStack(spacing: 6) {
+                    TextField("Built-in DexCraftWatermark (or choose image)", text: $appearance.settings.customWatermarkPath)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption2)
+                    Button("Choose...") {
+                        if let path = browseImageFile(title: "Choose Watermark Image") {
+                            appearance.settings.customWatermarkPath = path
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    if !appearance.settings.customWatermarkPath.isEmpty {
+                        Button("Default") {
+                            appearance.settings.customWatermarkPath = ""
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    }
+                }
+
+                HStack {
+                    Text("Watermark Opacity (\(Int(appearance.settings.watermarkOpacity * 100))%)")
+                        .font(.caption2)
+                        .frame(width: 155, alignment: .leading)
+                    Slider(value: $appearance.settings.watermarkOpacity, in: 0.0...1.0)
+                }
+
+                HStack {
+                    Text("Watermark Size (\(String(format: "%.2fx", appearance.settings.watermarkScale)))")
+                        .font(.caption2)
+                        .frame(width: 155, alignment: .leading)
+                    Slider(value: $appearance.settings.watermarkScale, in: 0.3...2.0)
+                }
+
+                HStack {
+                    Text("Watermark Blend")
+                        .font(.caption2)
+                        .frame(width: 155, alignment: .leading)
+                    Picker("Blend", selection: $appearance.settings.watermarkBlendMode) {
+                        ForEach(WatermarkBlendOption.allCases) { opt in
+                            Text(opt.displayName).tag(opt)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
+            }
+
+            Divider()
+
+            Toggle("Show Custom Image Behind Glass", isOn: $appearance.settings.isBackdropImageEnabled)
+                .font(.caption2)
+
+            if appearance.settings.isBackdropImageEnabled {
+                HStack(spacing: 6) {
+                    TextField("Select behind-glass background image...", text: $appearance.settings.customBackdropImagePath)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption2)
+                    Button("Choose...") {
+                        if let path = browseImageFile(title: "Choose Behind-Window Image") {
+                            appearance.settings.customBackdropImagePath = path
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
+
+                HStack {
+                    Text("Behind Image Opacity (\(Int(appearance.settings.backdropOpacity * 100))%)")
+                        .font(.caption2)
+                        .frame(width: 155, alignment: .leading)
+                    Slider(value: $appearance.settings.backdropOpacity, in: 0.0...1.0)
+                }
+
+                HStack {
+                    Text("Behind Image Blur (\(Int(appearance.settings.backdropBlur))px)")
+                        .font(.caption2)
+                        .frame(width: 155, alignment: .leading)
+                    Slider(value: $appearance.settings.backdropBlur, in: 0.0...28.0)
+                }
+
+                HStack {
+                    Text("Image Scaling")
+                        .font(.caption2)
+                        .frame(width: 155, alignment: .leading)
+                    Picker("Scaling", selection: $appearance.settings.backdropContentMode) {
+                        ForEach(BackdropContentMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+
+            HStack {
+                Text("Glass Highlight Tint (\(Int(appearance.settings.glassTintOpacity * 100))%)")
+                    .font(.caption2)
+                    .frame(width: 155, alignment: .leading)
+                Slider(value: $appearance.settings.glassTintOpacity, in: 0.0...0.55)
+            }
+        }
+        .padding(10)
+        .glassCard()
+    }
+
+    private func browseImageFile(title: String) -> String? {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.image, .png, .jpeg, .tiff, .webP, .heic]
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url.path
     }
 
     private var dexDiffusionCard: some View {

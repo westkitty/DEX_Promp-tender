@@ -17,7 +17,7 @@ struct IngredientsAndParamsView: View {
             technicalParametersSection
             referenceAssetsSection
 
-            if !coordinator.dexDiffusionWildcards.isEmpty {
+            if !coordinator.wildcardBanks.isEmpty {
                 wildcardBankSection
             }
         }
@@ -340,13 +340,21 @@ struct IngredientsAndParamsView: View {
 
     private var wildcardBankSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("LIVE DEXDIFFUSION WILDCARD BANKS")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+            HStack {
+                Text("WILDCARD BANKS (\(coordinator.wildcardBanks.count))")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Roll Wildcards in Draft") {
+                    viewModel.roughInput = coordinator.expandWildcardTokens(in: viewModel.roughInput)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    ForEach(coordinator.dexDiffusionWildcards) { bank in
+                    ForEach(coordinator.wildcardBanks) { bank in
                         Button("__\(bank.name)__ (\(bank.count))") {
                             let sep = viewModel.roughInput.isEmpty || viewModel.roughInput.hasSuffix(" ") ? "" : ", "
                             viewModel.roughInput += "\(sep)__\(bank.name)__"

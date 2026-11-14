@@ -1248,6 +1248,23 @@ final class PromptEngineViewModel: ObservableObject {
         statusMessage = "Deleted category \(normalizedCategory). Templates moved to Uncategorized."
     }
 
+    func recordCompiledMixHistory(
+        target: TargetDestination,
+        originalInput: String,
+        compiledPrompt: String
+    ) {
+        let entry = PromptHistoryEntry(
+            target: target.legacyPromptTarget,
+            originalInput: originalInput,
+            generatedPrompt: compiledPrompt,
+            options: options,
+            variables: variableValues
+        )
+        history.insert(entry, at: 0)
+        history = Array(history.prefix(50))
+        storageManager.saveHistory(history)
+    }
+
     func loadHistoryEntry(_ entry: PromptHistoryEntry) {
         roughInput = entry.originalInput
         selectedTarget = entry.target

@@ -133,6 +133,13 @@ struct TargetReadinessAndMixControlsView: View {
                 .labelsHidden()
                 .frame(maxWidth: 160)
             }
+
+            Toggle(isOn: $coordinator.expandWildcardsOnMix) {
+                Text("Expand __wildcards__ from built-in / Dexter Fusion banks during Mix")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .toggleStyle(.checkbox)
         }
         .padding(10)
         .glassCard()

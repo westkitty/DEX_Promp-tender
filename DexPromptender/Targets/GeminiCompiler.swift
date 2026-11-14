@@ -182,21 +182,19 @@ final class GeminiCompiler: TargetRecipeCompiler {
             compiledBody = TargetCompilationSupport.applyExplicitVariables(ir.rawInput.trimmingCharacters(in: .whitespacesAndNewlines), values: variables, resolver: resolver)
             provenance.append(ProvenanceEntry(source: .deterministicParser, section: "Neat Hygiene", note: "Preserved original layout cleanly"))
         } else {
-            let context = HeuristicOptimizationContext(target: .geminiChatGPT, scenario: scenario)
-            let optimized = HeuristicPromptOptimizer.optimize(ir.rawInput, context: context)
-            let built = mixMode == .shaken
-                ? OfflinePromptOptimizer().optimize(
-                    OptimizationInput(
-                        rawUserPrompt: optimized.optimizedText,
-                        modelFamily: .googleGeminiStyle,
-                        scenario: scenario,
-                        userOverrides: ir.intentKind == .structuredOutput ? UserOverrideOptions(strictJSONOverride: true) : nil
-                    )
-                ).optimizedPrompt
-                : optimized.optimizedText
-            let resolved = TargetCompilationSupport.applyExplicitVariables(built, values: variables, resolver: resolver)
-            compiledBody = TargetCompilationSupport.appendMissingProtectedTokens(to: resolved, ir: ir, negativePrompt: nil)
-            provenance.append(ProvenanceEntry(source: .heuristicTransform, section: "Gemini Structure", note: "Applied Gemini structured prose and property ordering rules"))
+            let enhanced = TargetCompilationSupport.enhanceTextTask(
+                rawInput: ir.rawInput,
+                ir: ir,
+                recipe: recipe,
+                mixMode: mixMode,
+                legacyTarget: .geminiChatGPT,
+                modelFamily: .googleGeminiStyle,
+                scenario: scenario,
+                variables: variables,
+                resolver: resolver
+            )
+            compiledBody = enhanced.prompt
+            provenance.append(ProvenanceEntry(source: .heuristicTransform, section: "Gemini Prompt Engineering", note: enhanced.sectionNote))
         }
 
         var generationConfig: [String: Any] = [
