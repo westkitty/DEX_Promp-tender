@@ -1,0 +1,3 @@
+import PromptenderKit
+
+DexPromptenderEntryPoint.run()

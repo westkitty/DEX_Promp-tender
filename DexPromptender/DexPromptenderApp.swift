@@ -1,6 +1,5 @@
 import SwiftUI
 
-@main
 struct DexPromptenderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
@@ -8,5 +7,11 @@ struct DexPromptenderApp: App {
         Settings {
             EmptyView()
         }
+    }
+}
+
+public enum DexPromptenderEntryPoint {
+    public static func run() {
+        DexPromptenderApp.main()
     }
 }

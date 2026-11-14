@@ -11,5 +11,6 @@
 ## Current Phase Status
 
 - **Phase 0 (Audit & Plan):** Complete.
-- **Bootstrap & Initial Publication:** Executed in `main` with clean preflight and SwiftPM compilation verification.
-- **Phases 1–12 (Core Compiler, 8 Target Recipes, UI Workbench, Integrations):** Pending plan approval before implementation edits.
+- **Bootstrap & Initial Publication:** Verified on `main` (`0c63658ca9a8f4d9c8d6c578a6daaff8e2f1ff0b`).
+- **Phases 1–6 (Core Compiler, Invariant Registry, MixModes Neat/Stirred/Shaken, Strain Proof, All 8 Target Compilers, Closed-World Flight):** Implemented and verified (`./scripts/run_tests.sh`: 10/10 tests in 3 suites passing, zero blocking errors).
+- **Phases 7–12 (UI Evolution, Live DexDiffusion Client, Keychain & Opt-In API Clients, DexCraft Importer, App Bundle Packaging):** Pending next implementation checkpoints.

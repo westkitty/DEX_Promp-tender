@@ -7,11 +7,12 @@ let package = Package(
         .macOS(.v13)
     ],
     products: [
+        .library(name: "PromptenderKit", targets: ["PromptenderKit"]),
         .executable(name: "DexPromptender", targets: ["DexPromptender"])
     ],
     targets: [
-        .executableTarget(
-            name: "DexPromptender",
+        .target(
+            name: "PromptenderKit",
             path: "DexPromptender",
             exclude: [
                 "Info.plist",
@@ -21,6 +22,16 @@ let package = Package(
                 .process("Resources/DefaultTemplates.json"),
                 .process("Resources/PromptingPlaybooks.md")
             ]
+        ),
+        .executableTarget(
+            name: "DexPromptender",
+            dependencies: ["PromptenderKit"],
+            path: "DexPromptenderEntry"
+        ),
+        .testTarget(
+            name: "PromptenderTests",
+            dependencies: ["PromptenderKit"],
+            path: "Tests/PromptenderTests"
         )
     ]
 )
