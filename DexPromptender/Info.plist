@@ -8,6 +8,8 @@
     <string>DEX//PROMPTENDER</string>
     <key>CFBundleExecutable</key>
     <string>DexPromptender</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.andrew.dexpromptender</string>
     <key>CFBundleInfoDictionaryVersion</key>

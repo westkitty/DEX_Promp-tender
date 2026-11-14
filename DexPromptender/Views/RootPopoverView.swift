@@ -52,7 +52,7 @@ struct RootPopoverView: View {
             )
             .ignoresSafeArea()
 
-            Image("DexCraftWatermark")
+            watermarkImage
                 .resizable()
                 .interpolation(.high)
                 .scaledToFit()
@@ -62,6 +62,17 @@ struct RootPopoverView: View {
                 .shadow(color: .black.opacity(0.14), radius: 10, x: 0, y: 4)
                 .allowsHitTesting(false)
         }
+    }
+
+    private var watermarkImage: Image {
+        if let nsImage = NSImage(named: "DexCraftWatermark") {
+            return Image(nsImage: nsImage)
+        }
+        if let url = AppBundleResources.url(forResource: "DexCraftWatermark", withExtension: "png"),
+           let fileImage = NSImage(contentsOf: url) {
+            return Image(nsImage: fileImage)
+        }
+        return Image("DexCraftWatermark")
     }
 
     @ViewBuilder
