@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private let collapsedSize = NSSize(width: 450, height: 640)
-    private let expandedSize = NSSize(width: 900, height: 640)
+    private let collapsedSize = NSSize(width: 480, height: 660)
+    private let expandedSize = NSSize(width: 960, height: 660)
+    private let detachedSize = NSSize(width: 1080, height: 720)
 
     private var statusItem: NSStatusItem!
     private var statusMenu: NSMenu!
@@ -13,6 +14,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var localChatWindow: NSPanel?
     private var globalMonitor: Any?
     private var localMonitor: Any?
+
+    private lazy var coordinator: PromptenderCoordinator = {
+        MainActor.assumeIsolated {
+            PromptenderCoordinator()
+        }
+    }()
 
     private lazy var viewModel: PromptEngineViewModel = {
         let vm = PromptEngineViewModel()
@@ -50,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         popover.animates = true
         popover.contentSize = collapsedSize
 
-        let rootView = RootPopoverView(viewModel: viewModel)
+        let rootView = RootPopoverView(viewModel: viewModel, coordinator: coordinator)
         popover.contentViewController = NSHostingController(rootView: rootView)
     }
 
@@ -59,9 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         guard let button = statusItem.button else { return }
         button.title = "DEX//PROMPTENDER"
-        if let hammer = NSImage(systemSymbolName: "hammer.fill", accessibilityDescription: "DEX//PROMPTENDER") {
+        let icon = NSImage(systemSymbolName: "wineglass.fill", accessibilityDescription: "DEX//PROMPTENDER")
+            ?? NSImage(systemSymbolName: "hammer.fill", accessibilityDescription: "DEX//PROMPTENDER")
+        if let icon {
             let symbolConfig = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
-            button.image = hammer.withSymbolConfiguration(symbolConfig)
+            button.image = icon.withSymbolConfiguration(symbolConfig)
             button.image?.isTemplate = true
             button.imagePosition = .imageLeading
         } else {
@@ -77,9 +86,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func setupStatusMenu() {
         let menu = NSMenu()
 
-        toggleDrawerMenuItem = NSMenuItem(title: "Open Drawer", action: #selector(togglePopover(_:)), keyEquivalent: "")
+        toggleDrawerMenuItem = NSMenuItem(title: "Open Bar", action: #selector(togglePopover(_:)), keyEquivalent: "")
         toggleDrawerMenuItem.target = self
         menu.addItem(toggleDrawerMenuItem)
+
+        let mixingRoomItem = NSMenuItem(title: "Open Mixing Room", action: #selector(openMixingRoomFromMenu(_:)), keyEquivalent: "m")
+        mixingRoomItem.target = self
+        menu.addItem(mixingRoomItem)
+
+        let refreshDexItem = NSMenuItem(title: "Refresh DexDiffusion Status", action: #selector(refreshDexDiffusionFromMenu(_:)), keyEquivalent: "")
+        refreshDexItem.target = self
+        menu.addItem(refreshDexItem)
+
+        menu.addItem(.separator())
 
         let batchExportItem = NSMenuItem(title: "Run Batch Export", action: #selector(runBatchExport(_:)), keyEquivalent: "")
         batchExportItem.target = self
@@ -93,6 +112,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusMenu = menu
     }
 
+    @objc private func openMixingRoomFromMenu(_ sender: Any?) {
+        if detachedWindow == nil {
+            openDetachedWindow()
+        } else {
+            detachedWindow?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    @objc private func refreshDexDiffusionFromMenu(_ sender: Any?) {
+        Task { @MainActor in
+            await coordinator.refreshDexDiffusionStatus()
+        }
+    }
+
     @objc private func handleStatusItemClick(_ sender: Any?) {
         guard let event = NSApp.currentEvent else {
             togglePopover(sender)
@@ -100,7 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         if event.type == .rightMouseUp {
-            toggleDrawerMenuItem.title = popover.isShown ? "Close Drawer" : "Open Drawer"
+            toggleDrawerMenuItem.title = popover.isShown ? "Close Bar" : "Open Bar"
             statusItem.menu = statusMenu
             statusItem.button?.performClick(nil)
             statusItem.menu = nil
@@ -226,9 +260,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             popover.performClose(nil)
         }
 
-        let minWidth = viewModel.isResultPanelVisible ? 760 : collapsedSize.width
-        let width = max(viewModel.isResultPanelVisible ? expandedSize.width : collapsedSize.width, minWidth)
-        let rect = NSRect(x: 0, y: 0, width: width, height: collapsedSize.height)
+        let minWidth: CGFloat = 880
+        let rect = NSRect(x: 0, y: 0, width: detachedSize.width, height: detachedSize.height)
         let panel = NSPanel(
             contentRect: rect,
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -236,7 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             defer: false
         )
 
-        panel.title = "DEX//PROMPTENDER"
+        panel.title = "DEX//PROMPTENDER · The Mixing Room"
         panel.level = .floating
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
@@ -244,11 +277,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.titlebarAppearsTransparent = true
         panel.collectionBehavior = [.fullScreenAuxiliary, .canJoinAllSpaces]
-        panel.minSize = NSSize(width: minWidth, height: 520)
+        panel.minSize = NSSize(width: minWidth, height: 580)
         panel.delegate = self
         panel.isReleasedWhenClosed = false
         panel.contentViewController = NSHostingController(
-            rootView: RootPopoverView(viewModel: viewModel)
+            rootView: RootPopoverView(viewModel: viewModel, coordinator: coordinator)
         )
         panel.center()
         panel.makeKeyAndOrderFront(nil)
@@ -322,8 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func updateDetachedWindowMinimumSize(expanded: Bool) {
         guard let window = detachedWindow else { return }
-        let minWidth = expanded ? 760 : collapsedSize.width
-        window.minSize = NSSize(width: minWidth, height: 520)
+        window.minSize = NSSize(width: 880, height: 580)
     }
 
     private func resizePopover(expanded: Bool, animated: Bool) {

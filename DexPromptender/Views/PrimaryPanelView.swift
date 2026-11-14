@@ -561,7 +561,7 @@ struct PrimaryPanelView: View {
     }
 }
 
-private struct PromptLibraryTab: View {
+struct PromptLibraryTab: View {
     @ObservedObject var viewModel: PromptEngineViewModel
 
     @State private var selectedPromptID: UUID?
@@ -828,7 +828,7 @@ private struct PromptTagAssignmentSheet: View {
     }
 }
 
-private struct TemplateManagerPanel: View {
+struct TemplateManagerPanel: View {
     @ObservedObject var viewModel: PromptEngineViewModel
     @State private var isCategoryFilterPopoverPresented = false
     @State private var categoryFilterSearch: String = ""
@@ -1232,7 +1232,7 @@ private struct TemplateMetadataEditorSheet: View {
     }
 }
 
-private struct HistoryManagerSheet: View {
+struct HistoryManagerSheet: View {
     @ObservedObject var viewModel: PromptEngineViewModel
     @Environment(\.dismiss) private var dismiss
 
@@ -1287,7 +1287,7 @@ private struct HistoryManagerSheet: View {
     }
 }
 
-private struct GlassCardModifier: ViewModifier {
+struct GlassCardModifier: ViewModifier {
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
@@ -1308,7 +1308,7 @@ private struct GlassCardModifier: ViewModifier {
     }
 }
 
-private extension View {
+extension View {
     func glassCard(cornerRadius: CGFloat = 10) -> some View {
         modifier(GlassCardModifier(cornerRadius: cornerRadius))
     }
