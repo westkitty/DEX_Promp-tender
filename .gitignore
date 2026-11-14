@@ -1,0 +1,49 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swp
+*~
+
+# SwiftPM & Xcode builds
+.build/
+build/
+build-install/
+DerivedData/
+dist/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# Bundled / local inference binaries & large model weights (never commit to public git)
+Tools/embedded-tiny-runtime/
+EmbeddedTinyRuntime/
+*.gguf
+*.bin
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.dylib
+*.so
+llama-completion
+llama-cli
+llama-server
+
+# Secrets, credentials, and private local state
+.env
+.env.*
+*.p12
+*.pem
+*.key
+*.mobileprovision
+backups/
+Backups/
+history.json
+templates.json
+prompt-library.json
+connected-model-settings.json
+optimizer-weights.json
+dexcraft_batch_*.json
+dexpromptender_batch_*.json
