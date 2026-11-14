@@ -49,6 +49,32 @@ struct WildcardBankRecord: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
+enum WildcardMutationError: LocalizedError {
+    case invalidName
+    case protectedBuiltIn(String)
+    case syncFolderUnavailable
+    case ambiguousCopy(String)
+    case unsafeSymbolicLink(String)
+    case overwriteNotAuthorized(String)
+    case noSelectedCopies(String)
+    case concurrentRemoteChange(String)
+    case partialDelete(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidName: return "Invalid wildcard bank name."
+        case .protectedBuiltIn(let name): return "Built-in bank \(name) is read-only. Duplicate it under a new name."
+        case .syncFolderUnavailable: return "The configured synced wildcard directory is not available."
+        case .ambiguousCopy(let name): return "Multiple case-variant copies of \(name) exist. Resolve the conflict before writing."
+        case .unsafeSymbolicLink(let name): return "Refusing to modify symbolic-link wildcard file \(name)."
+        case .overwriteNotAuthorized(let destination): return "Overwriting the existing \(destination) bank requires explicit approval."
+        case .noSelectedCopies(let name): return "No selected local/synced copies exist for \(name)."
+        case .concurrentRemoteChange(let name): return "Remote bank \(name) changed since preflight; refusing a stale remote write/delete."
+        case .partialDelete(let detail): return "Partial wildcard deletion: \(detail)"
+        }
+    }
+}
+
 struct WildcardSyncConfig: Codable, Equatable {
     var externalSyncDirectoryPath: String
     var lastSyncedAt: Date?
@@ -145,8 +171,7 @@ final class WildcardStore {
         items: [String],
         description: String,
         tags: [String],
-        source: WildcardSourceKind = .localUser,
-        mirrorToSyncFolder: Bool = true
+        source: WildcardSourceKind = .localUser
     ) throws -> WildcardBankRecord {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isValidBankName(trimmedName) else {
@@ -155,23 +180,20 @@ final class WildcardStore {
             ])
         }
 
+        guard !isBundledBank(name: trimmedName) else {
+            throw WildcardMutationError.protectedBuiltIn(trimmedName)
+        }
         let cleanItems = sanitizeItems(items)
         let content = serializeBankFile(items: cleanItems, description: description, tags: tags)
 
         try fileManager.createDirectory(at: localDirURL, withIntermediateDirectories: true)
-        let localFile = localDirURL.appendingPathComponent("\(trimmedName).txt")
-        try content.write(to: localFile, atomically: true, encoding: .utf8)
-
-        if mirrorToSyncFolder {
-            let syncPath = loadSyncConfig().externalSyncDirectoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !syncPath.isEmpty {
-                let syncDir = URL(fileURLWithPath: syncPath, isDirectory: true)
-                if fileManager.fileExists(atPath: syncDir.path) {
-                    let syncFile = syncDir.appendingPathComponent("\(trimmedName).txt")
-                    try? content.write(to: syncFile, atomically: true, encoding: .utf8)
-                }
-            }
+        let existing = try matchingFiles(in: localDirURL, name: trimmedName)
+        guard existing.count <= 1 else { throw WildcardMutationError.ambiguousCopy(trimmedName) }
+        if let old = existing.first {
+            try backupFile(at: old, origin: "local")
         }
+        let localFile = existing.first ?? localDirURL.appendingPathComponent("\(trimmedName).txt")
+        try content.write(to: localFile, atomically: true, encoding: .utf8)
 
         return WildcardBankRecord(
             name: trimmedName,
@@ -184,24 +206,146 @@ final class WildcardStore {
         )
     }
 
-    func deleteBankLocally(name: String, removeFromSyncFolder: Bool = false) {
-        let key = name.lowercased()
-        if let files = try? fileManager.contentsOfDirectory(at: localDirURL, includingPropertiesForKeys: nil) {
-            for file in files where file.deletingPathExtension().lastPathComponent.lowercased() == key {
-                try? fileManager.removeItem(at: file)
+
+    // Built-in banks are immutable. A local/folder/remote bank with the same name
+    // does not grant permission to delete the bundled recipe.
+    func isBundledBank(name: String) -> Bool {
+        guard isValidBankName(name), let dir = bundledDirURL else { return false }
+        return ((try? matchingFiles(in: dir, name: name)) ?? []).isEmpty == false
+    }
+
+    func hasLocalBank(name: String) -> Bool {
+        guard isValidBankName(name) else { return false }
+        return ((try? matchingFiles(in: localDirURL, name: name)) ?? []).isEmpty == false
+    }
+
+    func hasSyncedBank(name: String) -> Bool {
+        guard isValidBankName(name),
+              let dir = configuredSyncDirectory() else { return false }
+        return ((try? matchingFiles(in: dir, name: name)) ?? []).isEmpty == false
+    }
+
+    var hasConfiguredSyncFolder: Bool { configuredSyncDirectory() != nil }
+
+    // Back up all selected existing local files BEFORE deleting any copy.
+    // Never touch bundled resources. The caller separately authorizes and
+    // performs any remote action after creating a remote backup.
+    func deleteBankCopies(name: String, local: Bool, syncedFolder: Bool) throws -> [String] {
+        guard isValidBankName(name) else { throw WildcardMutationError.invalidName }
+        guard !isBundledBank(name: name) else { throw WildcardMutationError.protectedBuiltIn(name) }
+        var selected: [(URL, String)] = []
+        if local {
+            selected += try matchingFiles(in: localDirURL, name: name).map { ($0, "local") }
+        }
+        if syncedFolder {
+            guard let dir = configuredSyncDirectory() else { throw WildcardMutationError.syncFolderUnavailable }
+            selected += try matchingFiles(in: dir, name: name).map { ($0, "folder") }
+        }
+        guard !selected.isEmpty || (!local && !syncedFolder) else {
+            throw WildcardMutationError.noSelectedCopies(name)
+        }
+        for (file, origin) in selected {
+            try backupFile(at: file, origin: origin)
+        }
+        var removed: [String] = []
+        for (file, origin) in selected {
+            do {
+                try fileManager.removeItem(at: file)
+                removed.append(origin)
+            } catch {
+                throw WildcardMutationError.partialDelete(
+                    "\(removed.joined(separator: ", ")) completed; \(origin) failed: \(error.localizedDescription). Restorable backups are in WildcardBackups."
+                )
             }
         }
-        if removeFromSyncFolder {
-            let syncPath = loadSyncConfig().externalSyncDirectoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !syncPath.isEmpty {
-                let syncDir = URL(fileURLWithPath: syncPath, isDirectory: true)
-                if let files = try? fileManager.contentsOfDirectory(at: syncDir, includingPropertiesForKeys: nil) {
-                    for file in files where file.deletingPathExtension().lastPathComponent.lowercased() == key {
-                        try? fileManager.removeItem(at: file)
-                    }
-                }
+        return removed
+    }
+
+    func mirrorBankToSyncFolder(
+        name: String,
+        items: [String],
+        description: String,
+        tags: [String],
+        allowOverwrite: Bool
+    ) throws -> String {
+        guard isValidBankName(name) else { throw WildcardMutationError.invalidName }
+        guard !isBundledBank(name: name) else { throw WildcardMutationError.protectedBuiltIn(name) }
+        guard let dir = configuredSyncDirectory() else { throw WildcardMutationError.syncFolderUnavailable }
+        let content = serializeBankFile(items: sanitizeItems(items), description: description, tags: tags)
+        let existing = try matchingFiles(in: dir, name: name)
+        guard existing.count <= 1 else { throw WildcardMutationError.ambiguousCopy(name) }
+        if let old = existing.first {
+            let oldContent = try String(contentsOf: old, encoding: .utf8)
+            if oldContent == content { return "unchanged" }
+            guard allowOverwrite else { throw WildcardMutationError.overwriteNotAuthorized("synced folder") }
+            try backupFile(at: old, origin: "folder")
+        }
+        let target = existing.first ?? dir.appendingPathComponent("\(name).txt")
+        try content.write(to: target, atomically: true, encoding: .utf8)
+        return "updated"
+    }
+
+    @discardableResult
+    func backupRemoteBank(
+        name: String,
+        items: [String],
+        description: String,
+        tags: [String]
+    ) throws -> URL {
+        guard isValidBankName(name) else { throw WildcardMutationError.invalidName }
+        let dir = backupDirectory()
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        let target = dir.appendingPathComponent("remote-\(UUID().uuidString)-\(name).txt")
+        try serializeBankFile(items: items, description: description, tags: tags)
+            .write(to: target, atomically: true, encoding: .utf8)
+        return target
+    }
+
+    func canMirrorWithoutOverwrite(name: String, items: [String], description: String, tags: [String]) throws -> Bool {
+        guard isValidBankName(name) else { throw WildcardMutationError.invalidName }
+        guard let dir = configuredSyncDirectory() else { throw WildcardMutationError.syncFolderUnavailable }
+        let existing = try matchingFiles(in: dir, name: name)
+        guard existing.count <= 1 else { throw WildcardMutationError.ambiguousCopy(name) }
+        guard let old = existing.first else { return true }
+        let original = try String(contentsOf: old, encoding: .utf8)
+        return original == serializeBankFile(items: sanitizeItems(items), description: description, tags: tags)
+    }
+
+    private func configuredSyncDirectory() -> URL? {
+        let path = loadSyncConfig().externalSyncDirectoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+        return url
+    }
+
+    private func matchingFiles(in directory: URL, name: String) throws -> [URL] {
+        guard fileManager.fileExists(atPath: directory.path) else { return [] }
+        let entries = try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isSymbolicLinkKey])
+        let matches = entries.filter {
+            $0.pathExtension.lowercased() == "txt"
+            && $0.deletingPathExtension().lastPathComponent.lowercased() == name.lowercased()
+        }
+        for file in matches {
+            if try file.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true {
+                throw WildcardMutationError.unsafeSymbolicLink(file.lastPathComponent)
             }
         }
+        return matches
+    }
+
+    private func backupDirectory() -> URL {
+        localDirURL.deletingLastPathComponent().appendingPathComponent("WildcardBackups", isDirectory: true)
+    }
+
+    @discardableResult
+    private func backupFile(at source: URL, origin: String) throws -> URL {
+        let dir = backupDirectory()
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        let target = dir.appendingPathComponent("\(origin)-\(UUID().uuidString)-\(source.lastPathComponent)")
+        try fileManager.copyItem(at: source, to: target)
+        return target
     }
 
     func isValidBankName(_ name: String) -> Bool {

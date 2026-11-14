@@ -179,58 +179,211 @@ final class PromptenderCoordinator: ObservableObject {
         return wildcardBanks.first { $0.id == name.lowercased() }
     }
 
-    func saveWildcardBank(name: String, items: [String], description: String, tags: [String]) async {
+    // Save Local never writes to a synced folder or DexDiffusion. Those
+    // destinations require the explicit Sync confirmation in the editor.
+    @discardableResult
+    func saveWildcardBank(name: String, items: [String], description: String, tags: [String]) async -> Bool {
         do {
-            let cleanItems = wildcardStore.sanitizeItems(items)
-            let localSaved = try wildcardStore.saveBankLocally(
-                name: name,
-                items: cleanItems,
-                description: description,
-                tags: tags,
-                source: .localUser,
-                mirrorToSyncFolder: true
+            let bank = try wildcardStore.saveBankLocally(
+                name: name, items: items, description: description, tags: tags
             )
-
-            var pushedRemote = false
-            if (try? await dexDiffusionClient.saveWildcardBank(
-                name: localSaved.name,
-                items: localSaved.items,
-                description: localSaved.description,
-                tags: localSaved.tags
-            )) != nil {
-                pushedRemote = true
-            }
-
-            let finalRecord = WildcardBankRecord(
-                name: localSaved.name,
-                items: localSaved.items,
-                description: localSaved.description,
-                tags: localSaved.tags,
-                source: pushedRemote ? .dexterFusion : .localUser,
-                isFullDetailLoaded: true,
-                previewCount: localSaved.count
-            )
-            upsertWildcardRecordInMemory(finalRecord)
-            statusBanner = pushedRemote
-                ? "Saved & synced wildcard \"\(localSaved.name)\" (\(localSaved.count) items) to Dexter Fusion."
-                : "Saved wildcard \"\(localSaved.name)\" (\(localSaved.count) items) locally."
+            upsertWildcardRecordInMemory(bank)
+            statusBanner = "Saved \(bank.name) locally (\(bank.count) entries). Synced folder and DexDiffusion unchanged."
+            return true
         } catch {
-            statusBanner = "Wildcard save failed: \(error.localizedDescription)"
+            statusBanner = "Local wildcard save failed: \(error.localizedDescription)"
+            return false
         }
     }
 
-    func deleteWildcardBank(name: String) async {
-        wildcardStore.deleteBankLocally(name: name, removeFromSyncFolder: !wildcardSyncDirectoryPath.isEmpty)
-        wildcardBanks.removeAll { $0.id == name.lowercased() }
-
-        var removedRemote = false
-        if (try? await dexDiffusionClient.deleteWildcardBank(name: name)) != nil {
-            removedRemote = true
+    // A two-destination sync with explicit opt-ins and preflight; no hidden PUT.
+    // The external folder is mirrored first, then remote, after backups.
+    @discardableResult
+    func syncWildcardBank(
+        name: String,
+        items: [String],
+        description: String,
+        tags: [String],
+        toFolder: Bool,
+        toRemote: Bool,
+        allowFolderOverwrite: Bool,
+        allowRemoteOverwrite: Bool
+    ) async -> Bool {
+        guard toFolder || toRemote else {
+            statusBanner = "Select a sync destination."
+            return false
         }
-        mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
-        statusBanner = removedRemote
-            ? "Removed wildcard \"\(name)\" locally & in Dexter Fusion."
-            : "Removed local wildcard \"\(name)\"."
+        guard wildcardStore.isValidBankName(name), !wildcardStore.isBundledBank(name: name) else {
+            statusBanner = "Built-in banks are read-only. Duplicate the bank under a new name."
+            return false
+        }
+
+        let cleanItems = wildcardStore.sanitizeItems(items)
+        let cleanDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanTags = tags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        var remoteExisting: DexDiffusionWildcardDetail?
+        var remoteNeedsWrite = toRemote
+
+        // Check every requested destination BEFORE local or remote writes.
+        if toFolder {
+            do {
+                let isNewOrSame = try wildcardStore.canMirrorWithoutOverwrite(
+                    name: name, items: cleanItems, description: cleanDescription, tags: cleanTags
+                )
+                if !isNewOrSame && !allowFolderOverwrite {
+                    statusBanner = "Existing synced-folder bank differs. Explicitly approve overwrite to continue."
+                    return false
+                }
+            } catch {
+                statusBanner = "Folder sync preflight failed: \(error.localizedDescription)"
+                return false
+            }
+        }
+        if toRemote {
+            do {
+                let existing = try await dexDiffusionClient.fetchWildcardDetail(name: name, all: true)
+                if existing.source.lowercased().contains("built") {
+                    statusBanner = "Refusing to overwrite a built-in DexDiffusion wildcard bank."
+                    return false
+                }
+                remoteExisting = existing
+                let equivalent = existing.items == cleanItems
+                    && existing.description.trimmingCharacters(in: .whitespacesAndNewlines) == cleanDescription
+                    && existing.tags == cleanTags
+                remoteNeedsWrite = !equivalent
+                if !equivalent && !allowRemoteOverwrite {
+                    statusBanner = "Remote bank \(name) differs. Review and explicitly approve remote overwrite."
+                    return false
+                }
+                if !equivalent {
+                    _ = try wildcardStore.backupRemoteBank(
+                        name: name, items: existing.items,
+                        description: existing.description, tags: existing.tags
+                    )
+                }
+            } catch DexDiffusionClientError.serverError(let status, _) where status == 404 {
+                remoteExisting = nil // New remote bank; no original to overwrite.
+            } catch {
+                statusBanner = "Remote sync preflight failed: \(error.localizedDescription). No writes attempted."
+                return false
+            }
+        }
+
+        var completed = [String]()
+        do {
+            let localSaved = try wildcardStore.saveBankLocally(
+                name: name, items: cleanItems, description: cleanDescription, tags: cleanTags
+            )
+            completed.append("local")
+            if toFolder {
+                let folderResult = try wildcardStore.mirrorBankToSyncFolder(
+                    name: name, items: cleanItems, description: cleanDescription,
+                    tags: cleanTags, allowOverwrite: allowFolderOverwrite
+                )
+                completed.append("folder \(folderResult)")
+            }
+            if toRemote {
+                if remoteNeedsWrite {
+                    let latest: DexDiffusionWildcardDetail?
+                    do {
+                        latest = try await dexDiffusionClient.fetchWildcardDetail(name: name, all: true)
+                    } catch DexDiffusionClientError.serverError(let status, _) where status == 404 {
+                        latest = nil
+                    }
+                    guard latest == remoteExisting else {
+                        throw WildcardMutationError.concurrentRemoteChange(name)
+                    }
+                    _ = try await dexDiffusionClient.saveWildcardBank(
+                        name: name, items: cleanItems,
+                        description: cleanDescription, tags: cleanTags
+                    )
+                    completed.append("DexDiffusion")
+                } else {
+                    completed.append("DexDiffusion unchanged")
+                }
+                dexDiffusionWildcards.removeAll { $0.name.lowercased() == name.lowercased() }
+                dexDiffusionWildcards.append(
+                    DexDiffusionWildcardBank(
+                        id: name.lowercased(), name: name, count: cleanItems.count,
+                        sampleEntries: Array(cleanItems.prefix(5)),
+                        description: cleanDescription, tags: cleanTags,
+                        source: remoteExisting?.source ?? "user"
+                    )
+                )
+            }
+            mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
+            // Preserve complete locally edited text when both remote and local exist.
+            upsertWildcardRecordInMemory(localSaved)
+            statusBanner = "Synced \(name): \(completed.joined(separator: ", ")). Differing existing destinations were backed up before overwrite."
+            return true
+        } catch {
+            mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
+            statusBanner = "PARTIAL sync \(name): completed \(completed.joined(separator: ", ")); failed: \(error.localizedDescription). Inspect WildcardBackups before retry."
+            return false
+        }
+    }
+
+    @discardableResult
+    func deleteWildcardBank(
+        name: String,
+        local: Bool,
+        syncedFolder: Bool,
+        remote: Bool
+    ) async -> Bool {
+        guard local || syncedFolder || remote else {
+            statusBanner = "No deletion destination selected."
+            return false
+        }
+        guard wildcardStore.isValidBankName(name), !wildcardStore.isBundledBank(name: name) else {
+            statusBanner = "Built-in wildcard banks are protected and cannot be deleted."
+            return false
+        }
+
+        // Remote backup must succeed BEFORE touching local/synced copies.
+        var remoteOriginal: DexDiffusionWildcardDetail?
+        if remote {
+            do {
+                let existing = try await dexDiffusionClient.fetchWildcardDetail(name: name, all: true)
+                remoteOriginal = existing
+                if existing.source.lowercased().contains("built") {
+                    statusBanner = "Refusing to delete a built-in DexDiffusion bank."
+                    return false
+                }
+                _ = try wildcardStore.backupRemoteBank(
+                    name: name, items: existing.items,
+                    description: existing.description, tags: existing.tags
+                )
+            } catch {
+                statusBanner = "Remote deletion preflight failed for \(name): \(error.localizedDescription). Nothing deleted."
+                return false
+            }
+        }
+
+        var completed: [String] = []
+        do {
+            if local || syncedFolder {
+                completed += try wildcardStore.deleteBankCopies(
+                    name: name, local: local, syncedFolder: syncedFolder
+                )
+            }
+            if remote {
+                let latest = try await dexDiffusionClient.fetchWildcardDetail(name: name, all: true)
+                guard latest == remoteOriginal else {
+                    throw WildcardMutationError.concurrentRemoteChange(name)
+                }
+                try await dexDiffusionClient.deleteWildcardBank(name: name)
+                dexDiffusionWildcards.removeAll { $0.name.lowercased() == name.lowercased() }
+                completed.append("DexDiffusion")
+            }
+            mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
+            statusBanner = "Deleted \(name) from \(completed.joined(separator: ", ")). Backups saved in DexPromptender/WildcardBackups."
+            return true
+        } catch {
+            // Never make a failed remote request look like successful deletion.
+            mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
+            statusBanner = "Deletion incomplete for \(name). Verified steps: \(completed.isEmpty ? "not established" : completed.joined(separator: ", ")). Local deletion may be partial; check \(error.localizedDescription) and WildcardBackups."
+            return false
+        }
     }
 
     func savePromptQuickly(

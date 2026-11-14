@@ -16,6 +16,10 @@ struct WildcardsStudioView: View {
     @State private var lastRolledSample: String = ""
     @State private var isLoadingBank: Bool = false
     @State private var isSavingBank: Bool = false
+    @State private var isDeletingBank: Bool = false
+    @State private var isSyncingBank: Bool = false
+    @State private var pendingDeletion: WildcardBankRecord?
+    @State private var pendingSync: WildcardSyncDraft?
 
     private var filteredBanks: [WildcardBankRecord] {
         let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -44,6 +48,60 @@ struct WildcardsStudioView: View {
                 selectBank(first)
             }
         }
+        .sheet(item: $pendingDeletion) { bank in
+            WildcardDeleteConfirmationSheet(
+                bankName: bank.name,
+                hasLocal: coordinator.wildcardStore.hasLocalBank(name: bank.name),
+                hasFolder: coordinator.wildcardStore.hasSyncedBank(name: bank.name),
+                hasRemote: coordinator.dexDiffusionWildcards.contains {
+                    $0.name.lowercased() == bank.name.lowercased()
+                },
+                onCancel: { pendingDeletion = nil },
+                onDelete: { local, folder, remote in
+                    pendingDeletion = nil
+                    isDeletingBank = true
+                    Task {
+                        let success = await coordinator.deleteWildcardBank(
+                            name: bank.name, local: local, syncedFolder: folder, remote: remote
+                        )
+                        isDeletingBank = false
+                        if success {
+                            if let remaining = coordinator.wildcardBanks.first(where: { $0.id == bank.id }) {
+                                selectBank(remaining)
+                            } else if let next = coordinator.wildcardBanks.first {
+                                selectBank(next)
+                            } else {
+                                selectedBankName = ""
+                            }
+                        }
+                    }
+                }
+            )
+        }
+        .sheet(item: $pendingSync) { draft in
+            WildcardSyncConfirmationSheet(
+                bankName: draft.name,
+                entryCount: draft.items.count,
+                hasFolder: coordinator.wildcardStore.hasConfiguredSyncFolder,
+                onCancel: { pendingSync = nil },
+                onSync: { folder, remote, folderOverwrite, remoteOverwrite in
+                    pendingSync = nil
+                    isSyncingBank = true
+                    Task {
+                        let success = await coordinator.syncWildcardBank(
+                            name: draft.name, items: draft.items, description: draft.description,
+                            tags: draft.tags, toFolder: folder, toRemote: remote,
+                            allowFolderOverwrite: folderOverwrite,
+                            allowRemoteOverwrite: remoteOverwrite
+                        )
+                        isSyncingBank = false
+                        if success, let refreshed = coordinator.wildcardBanks.first(where: { $0.id == draft.name.lowercased() }) {
+                            selectBank(refreshed)
+                        }
+                    }
+                }
+            )
+        }
     }
 
     private var syncToolbarCard: some View {
@@ -64,7 +122,7 @@ struct WildcardsStudioView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
 
-                Button(coordinator.isRefreshingCapabilities ? "Syncing..." : "Sync Dexter Fusion") {
+                Button(coordinator.isRefreshingCapabilities ? "Refreshing..." : "Refresh DexDiffusion") {
                     Task { await coordinator.refreshDexDiffusionStatus() }
                 }
                 .buttonStyle(.borderedProminent)
@@ -221,29 +279,49 @@ struct WildcardsStudioView: View {
                     .controlSize(.small)
 
                     if !isCreatingNewBank && !selectedBankName.isEmpty {
-                        Button("Delete Bank") {
-                            let target = selectedBankName
-                            Task {
-                                await coordinator.deleteWildcardBank(name: target)
-                                if let next = coordinator.wildcardBanks.first {
-                                    selectBank(next)
-                                } else {
-                                    selectedBankName = ""
-                                }
+                        Button(isDeletingBank ? "Deleting..." : "Delete Bank...") {
+                            pendingDeletion = coordinator.wildcardBanks.first {
+                                $0.id == selectedBankName.lowercased()
                             }
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .disabled(isDeletingBank || isSavingBank || isSyncingBank
+                            || coordinator.wildcardStore.isBundledBank(name: selectedBankName))
                     }
 
                     Spacer()
 
-                    Button(isSavingBank ? "Saving..." : "Save & Sync") {
+                    Button(isSavingBank ? "Saving..." : "Save Local") {
                         saveCurrentBank()
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .disabled(isSavingBank || effectiveBankName.isEmpty)
+                    .disabled(isSavingBank || isDeletingBank || isSyncingBank || isLoadingBank
+                        || effectiveBankName.isEmpty
+                        || coordinator.wildcardStore.isBundledBank(name: effectiveBankName))
+
+                    Button(isSyncingBank ? "Syncing..." : "Sync...") {
+                        let name = effectiveBankName
+                        guard !name.isEmpty else { return }
+                        pendingSync = WildcardSyncDraft(
+                            name: name, items: currentEditorItems,
+                            description: editDescription,
+                            tags: editTags.split(separator: ",").map {
+                                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                            }.filter { !$0.isEmpty }
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isSavingBank || isDeletingBank || isSyncingBank || isLoadingBank
+                        || effectiveBankName.isEmpty
+                        || coordinator.wildcardStore.isBundledBank(name: effectiveBankName))
+                }
+                if coordinator.wildcardStore.isBundledBank(name: effectiveBankName) {
+                    Text("Bundled bank: read-only. Create a new bank to customize it.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             } else {
                 Text("Select a wildcard bank on the left or click New Bank to author and sync custom __wildcards__ with Dexter Fusion.")
@@ -312,11 +390,13 @@ struct WildcardsStudioView: View {
         isSavingBank = true
         Task {
             defer { isSavingBank = false }
-            await coordinator.saveWildcardBank(name: name, items: items, description: editDescription, tags: tags)
-            isCreatingNewBank = false
-            selectedBankName = name
-            if let refreshed = coordinator.wildcardBanks.first(where: { $0.id == name.lowercased() }) {
-                selectBank(refreshed)
+            let saved = await coordinator.saveWildcardBank(name: name, items: items, description: editDescription, tags: tags)
+            if saved {
+                isCreatingNewBank = false
+                selectedBankName = name
+                if let refreshed = coordinator.wildcardBanks.first(where: { $0.id == name.lowercased() }) {
+                    selectBank(refreshed)
+                }
             }
         }
     }
@@ -350,5 +430,129 @@ struct WildcardsStudioView: View {
                 editItemsText += "\n" + lines.joined(separator: "\n")
             }
         }
+    }
+}
+
+
+private struct WildcardSyncDraft: Identifiable {
+    let id = UUID()
+    let name: String
+    let items: [String]
+    let description: String
+    let tags: [String]
+}
+
+private struct WildcardDeleteConfirmationSheet: View {
+    let bankName: String
+    let hasLocal: Bool
+    let hasFolder: Bool
+    let hasRemote: Bool
+    let onCancel: () -> Void
+    let onDelete: (Bool, Bool, Bool) -> Void
+
+    @State private var deleteLocal: Bool
+    @State private var deleteFolder: Bool = false
+    @State private var deleteRemote: Bool = false
+    @State private var acknowledgeRemote: Bool = false
+
+    init(
+        bankName: String, hasLocal: Bool, hasFolder: Bool, hasRemote: Bool,
+        onCancel: @escaping () -> Void,
+        onDelete: @escaping (Bool, Bool, Bool) -> Void
+    ) {
+        self.bankName = bankName
+        self.hasLocal = hasLocal
+        self.hasFolder = hasFolder
+        self.hasRemote = hasRemote
+        self.onCancel = onCancel
+        self.onDelete = onDelete
+        _deleteLocal = State(initialValue: hasLocal)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Delete __\(bankName)__?")
+                .font(.headline)
+            Text("Choose precisely which copies to remove. No remote or synced-folder copy is deleted by default. Existing files are backed up before deletion.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Toggle("Local DEX//PROMPTENDER copy", isOn: $deleteLocal)
+                .disabled(!hasLocal)
+            Toggle("External synced-folder copy", isOn: $deleteFolder)
+                .disabled(!hasFolder)
+            Toggle("DexDiffusion remote bank (live DELETE request)", isOn: $deleteRemote)
+                .disabled(!hasRemote)
+            if deleteRemote {
+                Toggle("I understand this deletes the remote bank after backing it up locally.", isOn: $acknowledgeRemote)
+                    .font(.caption)
+            }
+
+            HStack {
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Delete Selected Copies", role: .destructive) {
+                    onDelete(deleteLocal, deleteFolder, deleteRemote)
+                }
+                .disabled(!(deleteLocal || deleteFolder || deleteRemote)
+                    || (deleteRemote && !acknowledgeRemote))
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 470)
+    }
+}
+
+private struct WildcardSyncConfirmationSheet: View {
+    let bankName: String
+    let entryCount: Int
+    let hasFolder: Bool
+    let onCancel: () -> Void
+    let onSync: (Bool, Bool, Bool, Bool) -> Void
+
+    @State private var toFolder = false
+    @State private var toRemote = false
+    @State private var allowFolderOverwrite = false
+    @State private var allowRemoteOverwrite = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Sync __\(bankName)__")
+                .font(.headline)
+            Text("\(entryCount) entries. Saving locally never syncs automatically. Select an external destination explicitly.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Toggle("Mirror into configured synced folder", isOn: $toFolder)
+                .disabled(!hasFolder)
+            if toFolder {
+                Toggle("Allow replacing a DIFFERENT folder copy (backup first)", isOn: $allowFolderOverwrite)
+                    .font(.caption)
+            }
+            Toggle("Push to DexDiffusion (live PUT request)", isOn: $toRemote)
+            if toRemote {
+                Toggle("Allow replacing a DIFFERENT remote bank (backup first)", isOn: $allowRemoteOverwrite)
+                    .font(.caption)
+            }
+
+            Text("Existing destination data is compared first. If it differs, an unchecked overwrite permission blocks the operation.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save Local & Sync Selected") {
+                    onSync(toFolder, toRemote, allowFolderOverwrite, allowRemoteOverwrite)
+                }
+                .disabled(!(toFolder || toRemote))
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 470)
     }
 }
