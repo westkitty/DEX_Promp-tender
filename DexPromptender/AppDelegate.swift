@@ -66,6 +66,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // LSUIElement activation is asynchronous. If the window was shown
+        // before the OS granted activation, finish the key-window transition
+        // now instead of leaving every input field visually editable but mute.
+        if let popover, popover.isShown,
+           let window = popover.contentViewController?.view.window,
+           !window.isKeyWindow {
+            window.makeKey()
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated { appearanceStore.flushPendingSave() }
         if let globalMonitor {
@@ -142,8 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if detachedWindow == nil {
             openDetachedWindow()
         } else {
-            detachedWindow?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            _ = MainActor.assumeIsolated { PromptenderWindowFocus.activateAndShow(detachedWindow) }
         }
     }
 
@@ -248,8 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func togglePopover(_ sender: Any?) {
         if viewModel.isDetachedWindowActive {
-            detachedWindow?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            _ = MainActor.assumeIsolated { PromptenderWindowFocus.activateAndShow(detachedWindow) }
             return
         }
 
@@ -258,10 +267,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if popover.isShown {
             popover.performClose(sender)
         } else {
-            resizePopover(expanded: viewModel.isResultPanelVisible, animated: false)
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.becomeKey()
-            NSApp.activate(ignoringOtherApps: true)
+            presentBar(relativeTo: button)
+        }
+    }
+
+    private func presentBar(relativeTo button: NSStatusBarButton) {
+        resizePopover(expanded: viewModel.isResultPanelVisible, animated: false)
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        _ = MainActor.assumeIsolated { PromptenderWindowFocus.activateAndFocus(popover.contentViewController?.view.window) }
+
+        // SwiftUI's hosting hierarchy and the NSPopover's window may finish
+        // attaching on the following run-loop pass. Request key status again
+        // only when the popover is shown and not already key.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.popover.isShown,
+                  let window = self.popover.contentViewController?.view.window,
+                  !window.isKeyWindow else { return }
+            _ = MainActor.assumeIsolated { PromptenderWindowFocus.activateAndFocus(window) }
         }
     }
 
@@ -309,12 +332,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.minSize = NSSize(width: minWidth, height: min(CGFloat(500), initialHeight))
         panel.delegate = self
         panel.isReleasedWhenClosed = false
+        panel.becomesKeyOnlyIfNeeded = false
         panel.contentViewController = NSHostingController(
             rootView: RootPopoverView(viewModel: viewModel, coordinator: coordinator, appearance: appearanceStore)
         )
         panel.center()
-        panel.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        _ = MainActor.assumeIsolated { PromptenderWindowFocus.activateAndShow(panel) }
 
         detachedWindow = panel
         viewModel.setDetachedWindowActive(true)
@@ -325,10 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.close()
 
         if showPopoverAfterClose, let button = statusItem.button {
-            resizePopover(expanded: viewModel.isResultPanelVisible, animated: false)
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.becomeKey()
-            NSApp.activate(ignoringOtherApps: true)
+            presentBar(relativeTo: button)
         }
     }
 
@@ -352,12 +372,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.minSize = NSSize(width: 420, height: 520)
         panel.delegate = self
         panel.isReleasedWhenClosed = false
+        panel.becomesKeyOnlyIfNeeded = false
         panel.contentViewController = NSHostingController(
             rootView: LocalChatPanelView(viewModel: viewModel)
         )
         panel.center()
-        panel.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        _ = MainActor.assumeIsolated { PromptenderWindowFocus.activateAndShow(panel) }
 
         localChatWindow = panel
         viewModel.setLocalChatWindowActive(true)

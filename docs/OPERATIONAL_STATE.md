@@ -52,3 +52,16 @@
 - **Reference:** docs/APPEARANCE_SETTINGS_REPAIR.md
 
 - **Final packaging:** Big Mac release app passed plutil, strict codesign, arm64 bundle inspection, and launch/quit smoke. Binary SHA-256 `3229c5d1a8930bf671ff272ca7f1654a7ab3a18f6dbbad0df5b86fe6e9e791d7`. Still not installed on MacBook at the time of this entry.
+
+
+## Keyboard Input Blocker and Focus Repair — 2026-11-15
+
+- **BLOCKER reported on MacBook:** User could interact with sliders and buttons but could not type into input fields after installing the Impeccable/appearance release.
+- **Source fault:** `AppDelegate` wrongly called `NSWindow.becomeKey()` when presenting the menu-bar popover and returning from a detached window. This is a system callback, not a key-window request. An `LSUIElement` app also needs ordered activation/key-window transitions.
+- **Repair:** Centralized actual `makeKey()`/activation in `PromptenderWindowFocus`, including a retry after popover window attachment, `applicationDidBecomeActive` callback for delayed activation, and activation-before-key for detached Mixing Room/Local Chat panels. Removed unused SwiftUI focus modifier on the native prompt editor; explicitly marked it editable/selectable.
+- **Protected capability:** Kept menu-bar-only design, all prompt inputs/outputs, local-first compiler, wildcard safety, Keychain, settings, DexDiffusion data, and other existing functions. No MacBook or user-data mutations during source repair.
+- **Evidence:** Swift Testing 47/47 across 10 suites PASS, including synthetic native `keyDown` delivery to `NSTextField`/`NSTextView` and actual SwiftUI `TextField`, `SecureField`, `TextEditor`, `TransparentTextEditor` bindings. One real Big Mac LSUIElement probe showed typed events routed to popup fields, but remote process never became frontmost; actual attended MacBook key-window status is UNKNOWN.
+- **Outstanding release gate:** Do not declare user-visible typing restored until the new binary is installed on the MacBook and a human click/type attempt succeeds in popover Raw Input, ordinary fields and detached Mixing Room after switching away/back. Remote MacBook access remains disabled. Preserve prior MacBook .app for rollback.
+- **Reference:** docs/KEYBOARD_FOCUS_REPAIR.md
+
+- **Keyboard-focus build:** Big Mac release bundle validated (arm64 executable, correct bundle ID, plist lint, strict ad-hoc signature, launch/quit). Executable SHA-256 `573d1aaa6452025f0f6dc69b77102b4307c880427a3ffebbcef787ab467ae251`. MacBook has not yet installed this revision; attended typing remains unverified.

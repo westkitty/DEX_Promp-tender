@@ -45,7 +45,6 @@ struct MixingRoomView: View {
     @State private var savePromptTitle: String = ""
     @State private var saveCompiledCopy: Bool = true
     @State private var alsoSaveAsTemplate: Bool = false
-    @FocusState private var isInputFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -310,7 +309,6 @@ struct MixingRoomView: View {
 
             ZStack(alignment: .topLeading) {
                 TransparentTextEditor(text: $viewModel.roughInput)
-                    .focused($isInputFocused)
                     .frame(minHeight: isDetached ? 180 : 150)
 
                 if viewModel.roughInput.isEmpty {
