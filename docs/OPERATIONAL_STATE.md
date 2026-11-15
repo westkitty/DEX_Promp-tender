@@ -40,3 +40,15 @@
 - **Evidence:** Native debug build passed; 36/36 Swift Testing cases across seven suites passed. Big Mac offscreen render probes passed at 480, 720, and 960 logical-point widths, plus Wildcards, Settings, and Serve views. Release bundle build and codesign outcome must be verified from the final packaging log, not inferred from debug tests. Impeccable's web-only detector is inapplicable to a SwiftUI/AppKit interface.
 - **Not yet verified:** Actual MacBook installation, live UI clicking, VoiceOver focus traversal, custom-image contrast in every appearance, and notarization. No live destructive wildcard API calls or paid API requests were made.
 - **Detail:** docs/IMPECCABLE_IMPLEMENTATION.md
+
+
+## Appearance Settings Visibility Repair — 2026-11-14
+
+- **Incident:** After the Impeccable upgrade, appearance settings were difficult to perceive as functional. Source inspection found settings persistence without an in-panel live preview, an image-obscuring full-strength material layer, and silent fallback for invalid image paths.
+- **Correction:** Shared PromptenderAppearanceLayer now powers both the Bar and the Settings preview. Backdrop images use a restrained material and a contrast-protecting scrim. Missing images have actionable text. Backdrop blur is prepared using bounded, cached Core Image rendering, rather than relying solely on an offscreen-unverifiable SwiftUI blur effect.
+- **Protected behavior:** No changes to compiler/prompt semantics, target selection, Keychain, external Serve authorization, DexDiffusion API, wildcard files, or source artwork. Appearance JSON fields and save location preserved.
+- **Evidence:** Native debug build passed. 42/42 automated tests across eight suites passed, including new same-NSHostingView pixel-change assertions for background opacity, glass tint, watermark on/off, watermark scale and opacity, fit/fill, gaussian blur, image-load warnings and source-byte preservation.
+- **Limitations:** Actual MacBook UI clicks and arbitrary image contrast remain unverified; MacBook execution access is disabled. Release bundle validation and published commit status are recorded separately after those actions.
+- **Reference:** docs/APPEARANCE_SETTINGS_REPAIR.md
+
+- **Final packaging:** Big Mac release app passed plutil, strict codesign, arm64 bundle inspection, and launch/quit smoke. Binary SHA-256 `3229c5d1a8930bf671ff272ca7f1654a7ab3a18f6dbbad0df5b86fe6e9e791d7`. Still not installed on MacBook at the time of this entry.

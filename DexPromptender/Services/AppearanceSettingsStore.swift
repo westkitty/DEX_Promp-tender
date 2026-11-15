@@ -1,4 +1,6 @@
 import AppKit
+import CoreImage
+import ImageIO
 import Foundation
 import SwiftUI
 
@@ -88,6 +90,13 @@ final class AppearanceSettingsStore: ObservableObject {
         cache.countLimit = 3
         return cache
     }()
+    private let blurredBackdropCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 3
+        cache.totalCostLimit = 12 * 1024 * 1024
+        return cache
+    }()
+    private let blurContext = CIContext(options: [.cacheIntermediates: false])
 
     private let fileURL: URL
     private let fileManager = FileManager.default
@@ -145,6 +154,66 @@ final class AppearanceSettingsStore: ObservableObject {
         guard let decoded = NSImage(contentsOfFile: clean) else { return nil }
         imageCache.setObject(decoded, forKey: cacheKey)
         return decoded
+    }
+
+    // Pre-render the blur into an image so macOS offscreen and real-window
+    // drawing use the same deterministic pixels. Do not modify source files.
+    // Thumbnails are bounded to protect low-memory MacBooks during slider drags.
+    func preparedBackdropImage(at path: String, blurRadius: Double) -> NSImage? {
+        guard let source = cachedImage(at: path) else { return nil }
+        let radius = Int(blurRadius.rounded())
+        guard radius > 0 else { return source }
+
+        let clean = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stamp = (try? fileManager.attributesOfItem(atPath: clean)[.modificationDate] as? Date)?
+            .timeIntervalSince1970 ?? 0
+        let cacheKey = "\(clean)#\(stamp)#blur:\(radius)" as NSString
+        if let cached = blurredBackdropCache.object(forKey: cacheKey) {
+            return cached
+        }
+
+        let url = URL(fileURLWithPath: clean)
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 1600
+        ]
+        guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+                  imageSource, 0, options as CFDictionary
+              ) else { return source }
+
+        let input = CIImage(cgImage: thumbnail)
+        let filtered = input.clampedToExtent()
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
+            .cropped(to: input.extent)
+        guard let output = blurContext.createCGImage(filtered, from: input.extent) else {
+            return source
+        }
+        let prepared = NSImage(
+            cgImage: output,
+            size: NSSize(width: output.width, height: output.height)
+        )
+        blurredBackdropCache.setObject(
+            prepared,
+            forKey: cacheKey,
+            cost: output.width * output.height * 4
+        )
+        return prepared
+    }
+
+    func imageLoadIssue(for path: String, label: String, required: Bool) -> String? {
+        let clean = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if clean.isEmpty {
+            return required ? "Choose a \(label) image to see its effect." : nil
+        }
+        guard fileManager.isReadableFile(atPath: clean) else {
+            return "\(label.capitalized) image is missing or unreadable. Choose another file."
+        }
+        guard cachedImage(at: clean) != nil else {
+            return "\(label.capitalized) image could not be decoded. Choose a supported image."
+        }
+        return nil
     }
 
     private func persist() {

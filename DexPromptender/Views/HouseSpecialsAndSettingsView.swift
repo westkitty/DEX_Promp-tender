@@ -238,6 +238,8 @@ struct PromptenderSettingsView: View {
                 .frame(minHeight: 44)
             }
 
+            appearancePreview
+
             Toggle("Show Center Watermark", isOn: $appearance.settings.isWatermarkEnabled)
                 .font(.caption2)
 
@@ -290,6 +292,17 @@ struct PromptenderSettingsView: View {
                 }
             }
 
+            if appearance.settings.isWatermarkEnabled,
+               let issue = appearance.imageLoadIssue(
+                   for: appearance.settings.customWatermarkPath,
+                   label: "watermark", required: false
+               ) {
+                Label(issue, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider()
 
             Toggle("Show Custom Image Behind Glass", isOn: $appearance.settings.isBackdropImageEnabled)
@@ -307,6 +320,20 @@ struct PromptenderSettingsView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
+                }
+
+                if let issue = appearance.imageLoadIssue(
+                    for: appearance.settings.customBackdropImagePath,
+                    label: "background", required: true
+                ) {
+                    Label(issue, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Label("Background loaded — visible in the live preview", systemImage: "checkmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.green)
                 }
 
                 HStack {
@@ -345,6 +372,48 @@ struct PromptenderSettingsView: View {
         }
         .padding(10)
         .glassCard()
+    }
+
+    private var appearancePreview: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("LIVE APPEARANCE PREVIEW")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Text("Changes apply immediately")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ZStack {
+                PromptenderAppearanceLayer(appearance: appearance)
+                VStack(alignment: .leading) {
+                    Text("THE BAR")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(8)
+                        .background(.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 6))
+                    Spacer()
+                    Text("Your prompt will appear over these surfaces.")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.white)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .padding(10)
+                .allowsHitTesting(false)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 176)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(PromptenderTheme.divider, lineWidth: 1)
+            )
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Live preview of watermark, background and glass tint")
+        }
     }
 
     private func browseImageFile(title: String) -> String? {
