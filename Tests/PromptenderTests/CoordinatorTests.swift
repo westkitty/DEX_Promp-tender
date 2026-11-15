@@ -173,10 +173,16 @@ struct CoordinatorTests {
         #expect(coordinator.dexDiffusionWildcards.first?.name == "lighting")
 
         // Valid mix opens PendingServeConfirmation with explicit destination & payload
+        let CURRENT_TEST_DRAFT = "editorial shot of brass espresso machine"
         coordinator.selectedDestination = .dexDiffusionImage
         coordinator.selectedRecipeID = "dexdiffusion-flux2-klein-4b"
-        _ = coordinator.mixPrompt(rawInput: "editorial shot of brass espresso machine", variables: [:], legacyOptions: EnhancementOptions())
-        coordinator.requestExternalServe(channel: .submitDexDiffusionControlled)
+        _ = coordinator.mixPrompt(rawInput: CURRENT_TEST_DRAFT, variables: [:], legacyOptions: EnhancementOptions())
+        coordinator.requestExternalServe(
+            channel: .submitDexDiffusionControlled,
+            rawInput: CURRENT_TEST_DRAFT,
+            variables: [:],
+            legacyOptions: EnhancementOptions()
+        )
         #expect(coordinator.pendingServeConfirmation != nil)
         #expect(coordinator.pendingServeConfirmation?.modelID == "flux2-klein-4b")
 
@@ -186,7 +192,143 @@ struct CoordinatorTests {
         let hugeInput = String(repeating: "very detailed architectural photography ", count: 160)
         let blockedResult = coordinator.mixPrompt(rawInput: hugeInput, variables: [:], legacyOptions: EnhancementOptions())
         #expect(blockedResult.proofReport.hasBlockingIssues == true)
-        coordinator.requestExternalServe(channel: .submitDexDiffusionControlled)
+        coordinator.requestExternalServe(
+            channel: .submitDexDiffusionControlled,
+            rawInput: hugeInput,
+            variables: [:],
+            legacyOptions: EnhancementOptions()
+        )
         #expect(coordinator.pendingServeConfirmation == nil)
     }
+
+    @MainActor
+    @Test("Compilation freshness tracks raw text, target, mode, variables, options, locks and references")
+    func compileFreshnessTracksAllInputs() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let coordinator = PromptenderCoordinator(
+            recipeStore: RecipeStore(storageDirectoryURL: dir),
+            wildcardStore: WildcardStore(storageDirectoryURL: dir),
+            secretStore: InMemorySecretStore()
+        )
+        var options = EnhancementOptions()
+        let draft = "A precise editorial product photograph"
+        let variables = ["brand": "original"]
+        _ = coordinator.mixPrompt(rawInput: draft, variables: variables, legacyOptions: options)
+
+        func fresh(_ raw: String = draft, _ vars: [String: String] = variables,
+                   _ opts: EnhancementOptions = options) -> Bool {
+            coordinator.isLastResultCurrent(rawInput: raw, variables: vars, legacyOptions: opts)
+        }
+
+        #expect(fresh())
+        #expect(!fresh(draft + " changed"))
+        #expect(!fresh(draft, ["brand": "modified"]))
+        options.includeAlternatives.toggle()
+        #expect(!fresh(draft, variables, options))
+        options.includeAlternatives.toggle()
+        #expect(fresh())
+
+        coordinator.mixMode = .shaken
+        #expect(!fresh())
+        coordinator.mixMode = .stirred
+        #expect(fresh())
+
+        coordinator.selectedDestination = .grokImagineImage
+        #expect(!fresh())
+        coordinator.selectedDestination = .dexDiffusionImage
+        coordinator.selectedRecipeID = "dexdiffusion-flux2-klein-4b"
+        #expect(fresh())
+
+        coordinator.manualLocks = ["KEEP EXACTLY"]
+        #expect(!fresh())
+        coordinator.manualLocks = []
+        #expect(fresh())
+
+        coordinator.parameterOverrides.width = 1024
+        #expect(!fresh())
+        coordinator.parameterOverrides.width = nil
+        #expect(fresh())
+
+        coordinator.attachedAssets = [
+            ReferenceAsset(label: "Test source", pathOrURI: "/test.png", role: .style)
+        ]
+        #expect(!fresh())
+        coordinator.attachedAssets = []
+        #expect(fresh())
+
+        coordinator.hintedIntent = .imageEdit
+        #expect(!fresh())
+        coordinator.hintedIntent = nil
+        #expect(fresh())
+    }
+
+    @MainActor
+    @Test("A stale draft cannot open confirmation or submit after confirmation opened")
+    func staleResultNeverServes() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var sent = [String]()
+        let transport = CoordinatorMockTransport { request in
+            sent.append(request.httpMethod ?? "GET")
+            return (Data(), 503)
+        }
+        let coordinator = PromptenderCoordinator(
+            recipeStore: RecipeStore(storageDirectoryURL: dir),
+            wildcardStore: WildcardStore(storageDirectoryURL: dir),
+            secretStore: InMemorySecretStore(),
+            dexDiffusionClient: DexDiffusionClient(transport: transport)
+        )
+        let options = EnhancementOptions()
+        let draft = "editorial photo of a midnight-blue compass"
+        _ = coordinator.mixPrompt(rawInput: draft, variables: [:], legacyOptions: options)
+        coordinator.requestExternalServe(
+            channel: .submitDexDiffusionControlled,
+            rawInput: draft + " modified", variables: [:], legacyOptions: options
+        )
+        #expect(coordinator.pendingServeConfirmation == nil)
+        #expect(coordinator.statusBanner.contains("Mix again"))
+
+        coordinator.requestExternalServe(
+            channel: .submitDexDiffusionControlled,
+            rawInput: draft, variables: [:], legacyOptions: options
+        )
+        #expect(coordinator.pendingServeConfirmation != nil)
+        await coordinator.confirmAndExecutePendingServe(
+            rawInput: draft + " modified", variables: [:], legacyOptions: options
+        )
+        #expect(coordinator.pendingServeConfirmation == nil)
+        #expect(coordinator.statusBanner.contains("Mix again"))
+        #expect(sent.isEmpty)
+    }
+
+    @MainActor
+    @Test("Wildcard catalogue revisions invalidate results only when wildcard expansion was enabled")
+    func wildcardRevisionInvalidation() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let coordinator = PromptenderCoordinator(
+            recipeStore: RecipeStore(storageDirectoryURL: dir),
+            wildcardStore: WildcardStore(storageDirectoryURL: dir),
+            secretStore: InMemorySecretStore()
+        )
+        let opts = EnhancementOptions()
+        let input = "A studio object with __lighting__"
+        coordinator.expandWildcardsOnMix = false
+        _ = coordinator.mixPrompt(rawInput: input, variables: [:], legacyOptions: opts)
+        let saved = await coordinator.saveWildcardBank(
+            name: "fresh_bank", items: ["good"], description: "", tags: []
+        )
+        #expect(saved)
+        #expect(coordinator.isLastResultCurrent(rawInput: input, variables: [:], legacyOptions: opts))
+        coordinator.expandWildcardsOnMix = true
+        _ = coordinator.mixPrompt(rawInput: input, variables: [:], legacyOptions: opts)
+        #expect(coordinator.isLastResultCurrent(rawInput: input, variables: [:], legacyOptions: opts))
+        let updated = await coordinator.saveWildcardBank(
+            name: "another_bank", items: ["new"], description: "", tags: []
+        )
+        #expect(updated)
+        #expect(!coordinator.isLastResultCurrent(rawInput: input, variables: [:], legacyOptions: opts))
+    }
+
 }

@@ -14,6 +14,31 @@ struct PendingServeConfirmation: Identifiable {
     let result: CompilationResult
 }
 
+// Capture every input affecting compiler output, not just the visible prompt text.
+struct PromptenderCompileSnapshot: Equatable {
+    let rawInput: String
+    let selectedRecipeID: String
+    let selectedDestination: TargetDestination
+    let mixMode: MixMode
+    let hintedIntent: IntentKind?
+    let attachedAssets: [ReferenceAsset]
+    let parameterOverrides: TechnicalParameterSet
+    let manualLocks: [String]
+    let expandWildcardsOnMix: Bool
+    let wildcardBanks: [WildcardBankRecord]
+    let variables: [String: String]
+    let enhancementOptions: Data
+}
+
+struct WildcardOperationReceipt: Identifiable {
+    let id = UUID()
+    let title: String
+    let completed: [String]
+    let failed: [String]
+    let recoveryMessage: String
+    let backupDirectory: URL?
+}
+
 @MainActor
 final class PromptenderCoordinator: ObservableObject {
     let compilerEngine: PromptCompilerEngine
@@ -53,6 +78,8 @@ final class PromptenderCoordinator: ObservableObject {
 
     @Published private(set) var lastParsedIR: CanonicalPromptIR?
     @Published private(set) var lastResult: CompilationResult?
+    @Published private(set) var lastCompileSnapshot: PromptenderCompileSnapshot?
+    @Published private(set) var latestWildcardOperationReceipt: WildcardOperationReceipt?
     @Published private(set) var lastFlightReport: FlightComparisonReport?
     @Published private(set) var draftSnapshots: [String] = []
     @Published private(set) var dexDiffusionVersion: DexDiffusionVersionInfo?
@@ -111,6 +138,73 @@ final class PromptenderCoordinator: ObservableObject {
         readinessMap[recipe.id] ?? .sourceImplemented
     }
 
+    private func compileSnapshot(
+        rawInput: String,
+        variables: [String: String],
+        legacyOptions: EnhancementOptions
+    ) -> PromptenderCompileSnapshot {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return PromptenderCompileSnapshot(
+            rawInput: rawInput,
+            selectedRecipeID: activeRecipe.id,
+            selectedDestination: selectedDestination,
+            mixMode: mixMode,
+            hintedIntent: hintedIntent,
+            attachedAssets: attachedAssets,
+            parameterOverrides: parameterOverrides,
+            manualLocks: manualLocks,
+            expandWildcardsOnMix: expandWildcardsOnMix,
+            wildcardBanks: expandWildcardsOnMix ? wildcardBanks : [],
+            variables: variables,
+            enhancementOptions: (try? encoder.encode(legacyOptions)) ?? Data()
+        )
+    }
+
+    func isLastResultCurrent(
+        rawInput: String,
+        variables: [String: String],
+        legacyOptions: EnhancementOptions
+    ) -> Bool {
+        guard lastResult != nil, let lastCompileSnapshot else { return false }
+        return lastCompileSnapshot == compileSnapshot(
+            rawInput: rawInput, variables: variables, legacyOptions: legacyOptions
+        )
+    }
+
+    private func rejectStaleResult(
+        rawInput: String,
+        variables: [String: String],
+        legacyOptions: EnhancementOptions
+    ) -> Bool {
+        guard isLastResultCurrent(rawInput: rawInput, variables: variables, legacyOptions: legacyOptions) else {
+            statusBanner = "Draft or compilation settings changed. Mix again before copying or serving."
+            return true
+        }
+        return false
+    }
+
+    private func wildcardReceipt(
+        title: String, completed: [String] = [], failed: [String] = [], recovery: String
+    ) {
+        latestWildcardOperationReceipt = WildcardOperationReceipt(
+            title: title,
+            completed: completed,
+            failed: failed,
+            recoveryMessage: recovery,
+            backupDirectory: wildcardStore.wildcardBackupDirectoryURL()
+        )
+    }
+
+    func revealWildcardBackups() {
+        let directory = wildcardStore.wildcardBackupDirectoryURL()
+        guard FileManager.default.fileExists(atPath: directory.path) else {
+            statusBanner = "No wildcard backups exist yet."
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([directory])
+    }
+
     func mixPrompt(rawInput: String, variables: [String: String], legacyOptions: EnhancementOptions) -> CompilationResult {
         if draftSnapshots.last != rawInput && !rawInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             draftSnapshots.append(rawInput)
@@ -142,6 +236,7 @@ final class PromptenderCoordinator: ObservableObject {
             readiness: readiness(for: recipe)
         )
         lastResult = compiled
+        lastCompileSnapshot = compileSnapshot(rawInput: rawInput, variables: variables, legacyOptions: legacyOptions)
         statusBanner = "\(recipe.name) · \(compiled.proofReport.summaryBadge) · \(compiled.compilationDurationMs) ms"
         return compiled
     }
@@ -159,7 +254,7 @@ final class PromptenderCoordinator: ObservableObject {
         mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
         statusBanner = trimmed.isEmpty
             ? "Cleared external wildcard sync folder."
-            : "Synced local wildcards with \(URL(fileURLWithPath: trimmed).lastPathComponent)."
+            : "Selected wildcard folder \(URL(fileURLWithPath: trimmed).lastPathComponent). No files copied; choose Sync to write."
     }
 
     func loadWildcardBankDetail(name: String) async -> WildcardBankRecord? {
@@ -211,10 +306,12 @@ final class PromptenderCoordinator: ObservableObject {
     ) async -> Bool {
         guard toFolder || toRemote else {
             statusBanner = "Select a sync destination."
+            wildcardReceipt(title: "Sync not started", failed: ["No destination selected"], recovery: "Choose a folder or DexDiffusion destination, then retry.")
             return false
         }
         guard wildcardStore.isValidBankName(name), !wildcardStore.isBundledBank(name: name) else {
             statusBanner = "Built-in banks are read-only. Duplicate the bank under a new name."
+            wildcardReceipt(title: "Sync blocked", failed: [statusBanner], recovery: "Create a custom copy with a different bank name.")
             return false
         }
 
@@ -232,10 +329,12 @@ final class PromptenderCoordinator: ObservableObject {
                 )
                 if !isNewOrSame && !allowFolderOverwrite {
                     statusBanner = "Existing synced-folder bank differs. Explicitly approve overwrite to continue."
+                    wildcardReceipt(title: "Sync blocked", failed: ["Folder content differs"], recovery: "Review the folder bank and explicitly allow replacement if correct.")
                     return false
                 }
             } catch {
                 statusBanner = "Folder sync preflight failed: \(error.localizedDescription)"
+                wildcardReceipt(title: "Sync blocked", failed: [statusBanner], recovery: "Check the selected folder and its permissions before retrying.")
                 return false
             }
         }
@@ -244,6 +343,7 @@ final class PromptenderCoordinator: ObservableObject {
                 let existing = try await dexDiffusionClient.fetchWildcardDetail(name: name, all: true)
                 if existing.source.lowercased().contains("built") {
                     statusBanner = "Refusing to overwrite a built-in DexDiffusion wildcard bank."
+                    wildcardReceipt(title: "Sync blocked", failed: [statusBanner], recovery: "Use a differently named custom bank.")
                     return false
                 }
                 remoteExisting = existing
@@ -253,6 +353,7 @@ final class PromptenderCoordinator: ObservableObject {
                 remoteNeedsWrite = !equivalent
                 if !equivalent && !allowRemoteOverwrite {
                     statusBanner = "Remote bank \(name) differs. Review and explicitly approve remote overwrite."
+                    wildcardReceipt(title: "Sync blocked", failed: [statusBanner], recovery: "Review the live bank before allowing a remote overwrite.")
                     return false
                 }
                 if !equivalent {
@@ -265,6 +366,7 @@ final class PromptenderCoordinator: ObservableObject {
                 remoteExisting = nil // New remote bank; no original to overwrite.
             } catch {
                 statusBanner = "Remote sync preflight failed: \(error.localizedDescription). No writes attempted."
+                wildcardReceipt(title: "Sync blocked", failed: [statusBanner], recovery: "Check DexDiffusion connectivity, then refresh and retry.")
                 return false
             }
         }
@@ -315,10 +417,12 @@ final class PromptenderCoordinator: ObservableObject {
             // Preserve complete locally edited text when both remote and local exist.
             upsertWildcardRecordInMemory(localSaved)
             statusBanner = "Synced \(name): \(completed.joined(separator: ", ")). Differing existing destinations were backed up before overwrite."
+            wildcardReceipt(title: "Sync completed: \(name)", completed: completed, recovery: "Existing copies were backed up where replaced.")
             return true
         } catch {
             mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
             statusBanner = "PARTIAL sync \(name): completed \(completed.joined(separator: ", ")); failed: \(error.localizedDescription). Inspect WildcardBackups before retry."
+            wildcardReceipt(title: "Sync incomplete: \(name)", completed: completed, failed: [error.localizedDescription], recovery: "Review the affected destinations and backups before retrying.")
             return false
         }
     }
@@ -332,10 +436,12 @@ final class PromptenderCoordinator: ObservableObject {
     ) async -> Bool {
         guard local || syncedFolder || remote else {
             statusBanner = "No deletion destination selected."
+            wildcardReceipt(title: "Deletion not started", failed: [statusBanner], recovery: "Choose the exact copies to remove.")
             return false
         }
         guard wildcardStore.isValidBankName(name), !wildcardStore.isBundledBank(name: name) else {
             statusBanner = "Built-in wildcard banks are protected and cannot be deleted."
+            wildcardReceipt(title: "Deletion blocked", failed: [statusBanner], recovery: "Only custom banks may be removed.")
             return false
         }
 
@@ -347,6 +453,7 @@ final class PromptenderCoordinator: ObservableObject {
                 remoteOriginal = existing
                 if existing.source.lowercased().contains("built") {
                     statusBanner = "Refusing to delete a built-in DexDiffusion bank."
+                    wildcardReceipt(title: "Deletion blocked", failed: [statusBanner], recovery: "Only custom DexDiffusion banks may be removed.")
                     return false
                 }
                 _ = try wildcardStore.backupRemoteBank(
@@ -355,6 +462,7 @@ final class PromptenderCoordinator: ObservableObject {
                 )
             } catch {
                 statusBanner = "Remote deletion preflight failed for \(name): \(error.localizedDescription). Nothing deleted."
+                wildcardReceipt(title: "Deletion blocked: \(name)", failed: [statusBanner], recovery: "Refresh the remote bank and retry after connectivity is restored.")
                 return false
             }
         }
@@ -377,11 +485,13 @@ final class PromptenderCoordinator: ObservableObject {
             }
             mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
             statusBanner = "Deleted \(name) from \(completed.joined(separator: ", ")). Backups saved in DexPromptender/WildcardBackups."
+            wildcardReceipt(title: "Deletion completed: \(name)", completed: completed, recovery: "Use Reveal Backups in Finder to restore files if needed.")
             return true
         } catch {
             // Never make a failed remote request look like successful deletion.
             mergeWildcardCatalog(remoteBanks: dexDiffusionWildcards)
             statusBanner = "Deletion incomplete for \(name). Verified steps: \(completed.isEmpty ? "not established" : completed.joined(separator: ", ")). Local deletion may be partial; check \(error.localizedDescription) and WildcardBackups."
+            wildcardReceipt(title: "Deletion incomplete: \(name)", completed: completed, failed: [error.localizedDescription], recovery: "Inspect all destination copies and local WildcardBackups before retrying.")
             return false
         }
     }
@@ -637,15 +747,21 @@ final class PromptenderCoordinator: ObservableObject {
 
     // MARK: - Serve Actions (Explicit Safety Gates)
 
-    func copyCompiledPrompt() {
+    func copyCompiledPrompt(
+        rawInput: String, variables: [String: String], legacyOptions: EnhancementOptions
+    ) {
         guard let result = lastResult else { return }
+        guard !rejectStaleResult(rawInput: rawInput, variables: variables, legacyOptions: legacyOptions) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(result.compiledPrompt, forType: .string)
         statusBanner = "Copied compiled prompt (\(result.compiledPrompt.count) chars) to clipboard."
     }
 
-    func copyPayloadJSON() {
+    func copyPayloadJSON(
+        rawInput: String, variables: [String: String], legacyOptions: EnhancementOptions
+    ) {
         guard let result = lastResult else { return }
+        guard !rejectStaleResult(rawInput: rawInput, variables: variables, legacyOptions: legacyOptions) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(result.structuredPayloadJSON, forType: .string)
         statusBanner = "Copied structured \(result.modelID) JSON payload to clipboard."
@@ -668,11 +784,15 @@ final class PromptenderCoordinator: ObservableObject {
         }
     }
 
-    func requestExternalServe(channel: ServeChannel) {
+    func requestExternalServe(
+        channel: ServeChannel,
+        rawInput: String, variables: [String: String], legacyOptions: EnhancementOptions
+    ) {
         guard let result = lastResult else {
             statusBanner = "Mix a prompt before serving."
             return
         }
+        guard !rejectStaleResult(rawInput: rawInput, variables: variables, legacyOptions: legacyOptions) else { return }
         guard !result.proofReport.hasBlockingIssues else {
             statusBanner = "Resolve blocking Proof issues before external submission."
             return
@@ -711,8 +831,17 @@ final class PromptenderCoordinator: ObservableObject {
         }
     }
 
-    func confirmAndExecutePendingServe() async {
-        guard let pending = pendingServeConfirmation else { return }
+    func confirmAndExecutePendingServe(
+        rawInput: String, variables: [String: String], legacyOptions: EnhancementOptions
+    ) async {
+        guard !isSubmittingServe, let pending = pendingServeConfirmation else { return }
+        guard let current = lastResult,
+              current.id == pending.result.id,
+              !rejectStaleResult(rawInput: rawInput, variables: variables, legacyOptions: legacyOptions)
+        else {
+            pendingServeConfirmation = nil
+            return
+        }
         isSubmittingServe = true
         defer {
             isSubmittingServe = false

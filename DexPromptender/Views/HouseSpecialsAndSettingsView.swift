@@ -153,8 +153,7 @@ struct TheCellarView: View {
                 PromptLibraryTab(viewModel: viewModel)
             case .templates:
                 TemplateManagerPanel(viewModel: viewModel)
-                    .padding(10)
-                    .glassCard()
+                    .padding(.vertical, 8)
             case .history:
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -213,6 +212,12 @@ struct PromptenderSettingsView: View {
             appearanceCard
             dexDiffusionCard
             keychainAPIKeysCard
+            if let saveError = appearance.persistenceError {
+                Text("Appearance settings were not saved: \(saveError)")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Appearance save error: \(saveError)")
+            }
             dexCraftMigrationCard
             localGGUFCard
         }
@@ -225,11 +230,12 @@ struct PromptenderSettingsView: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Reset") {
+                Button("Reset Appearance") {
                     appearance.resetToDefaults()
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.mini)
+                .controlSize(.regular)
+                .frame(minHeight: 44)
             }
 
             Toggle("Show Center Watermark", isOn: $appearance.settings.isWatermarkEnabled)
@@ -424,36 +430,43 @@ struct PromptenderSettingsView: View {
     }
 
     private func keyRow(provider: APIKeyProvider, draft: Binding<String>) -> some View {
-        HStack(spacing: 6) {
-            VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
                 Text(provider.displayName)
-                    .font(.caption2.weight(.semibold))
-                Text(coordinator.apiKeyConfigured[provider] == true ? "Stored in Keychain" : "Not configured")
-                    .font(.caption2)
-                    .foregroundStyle(coordinator.apiKeyConfigured[provider] == true ? .green : .secondary)
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                Text(coordinator.apiKeyConfigured[provider] == true
+                     ? "Stored in Keychain" : "Not configured")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .frame(width: 170, alignment: .leading)
 
-            SecureField("Paste API Key", text: draft)
+            SecureField("Paste \(provider.displayName) API key", text: draft)
                 .textFieldStyle(.roundedBorder)
-                .font(.caption2)
 
-            Button("Save") {
-                coordinator.saveAPIKey(draft.wrappedValue, for: provider)
-                draft.wrappedValue = ""
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-            if coordinator.apiKeyConfigured[provider] == true {
-                Button("Clear") {
-                    coordinator.deleteAPIKey(for: provider)
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Save \(provider.displayName) Key") {
+                    coordinator.saveAPIKey(draft.wrappedValue, for: provider)
+                    draft.wrappedValue = ""
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+                .tint(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .gray : .accentColor)
+                .controlSize(.regular)
+                .frame(minHeight: 44)
+                .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                if coordinator.apiKeyConfigured[provider] == true {
+                    Button("Remove \(provider.displayName) Key", role: .destructive) {
+                        coordinator.deleteAPIKey(for: provider)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .frame(minHeight: 44)
+                }
             }
         }
+        .padding(.vertical, 4)
     }
 
     private var dexCraftMigrationCard: some View {

@@ -15,6 +15,8 @@ struct WildcardsStudioView: View {
     @State private var isCreatingNewBank: Bool = false
     @State private var lastRolledSample: String = ""
     @State private var isLoadingBank: Bool = false
+    @State private var bankLoadError: String?
+    @State private var bankLoadRequestID = UUID()
     @State private var isSavingBank: Bool = false
     @State private var isDeletingBank: Bool = false
     @State private var isSyncingBank: Bool = false
@@ -34,6 +36,9 @@ struct WildcardsStudioView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             syncToolbarCard
+            if let receipt = coordinator.latestWildcardOperationReceipt {
+                wildcardOperationReceiptCard(receipt)
+            }
 
             HStack(alignment: .top, spacing: 10) {
                 bankListSidebar
@@ -122,11 +127,16 @@ struct WildcardsStudioView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
 
-                Button(coordinator.isRefreshingCapabilities ? "Refreshing..." : "Refresh DexDiffusion") {
+                Button {
                     Task { await coordinator.refreshDexDiffusionStatus() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .frame(minWidth: 44, minHeight: 44)
+                .help("Refresh DexDiffusion wildcard catalog")
+                .accessibilityLabel("Refresh DexDiffusion wildcard catalog")
                 .disabled(coordinator.isRefreshingCapabilities)
             }
 
@@ -152,6 +162,42 @@ struct WildcardsStudioView: View {
         .glassCard()
     }
 
+    private func wildcardOperationReceiptCard(_ receipt: WildcardOperationReceipt) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(receipt.completed, id: \.self) { step in
+                    Label(step, systemImage: "checkmark.circle")
+                        .foregroundStyle(.green)
+                }
+                ForEach(receipt.failed, id: \.self) { issue in
+                    Label(issue, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text(receipt.recoveryMessage)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let directory = receipt.backupDirectory,
+                   FileManager.default.fileExists(atPath: directory.path) {
+                    Button("Reveal Backups in Finder") {
+                        coordinator.revealWildcardBackups()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .font(.callout)
+            .padding(.vertical, 6)
+        } label: {
+            Label(
+                receipt.title,
+                systemImage: receipt.failed.isEmpty ? "checkmark.circle" : "exclamationmark.triangle"
+            )
+            .font(.callout.weight(.semibold))
+        }
+        .padding(10)
+        .background(PromptenderTheme.surface.opacity(0.52), in: RoundedRectangle(cornerRadius: 9))
+    }
+
     private var bankListSidebar: some View {
         VStack(alignment: .leading, spacing: 6) {
             TextField("Filter banks...", text: $searchQuery)
@@ -159,6 +205,16 @@ struct WildcardsStudioView: View {
                 .font(.caption2)
 
             ScrollView {
+                if filteredBanks.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(searchQuery.isEmpty ? "No wildcard banks available" : "No banks match the filter")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Button("Create Bank") { startNewBank() }
+                            .buttonStyle(.bordered)
+                    }
+                    .padding(8)
+                }
                 LazyVStack(alignment: .leading, spacing: 4) {
                     ForEach(filteredBanks) { bank in
                         let isSelected = !isCreatingNewBank && bank.name.lowercased() == selectedBankName.lowercased()
@@ -265,40 +321,59 @@ struct WildcardsStudioView: View {
                     }
                 }
 
+                if let bankLoadError {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(bankLoadError, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                            .font(.callout)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Retry Full Bank Load") {
+                            if let bank = coordinator.wildcardBanks.first(where: {
+                                $0.id == selectedBankName.lowercased()
+                            }) {
+                                selectBank(bank)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+
                 TextEditor(text: $editItemsText)
-                    .font(.system(size: 11, design: .monospaced))
+                    .disabled(isLoadingBank || bankLoadError != nil)
+                    .font(.system(size: 12, design: .monospaced))
                     .frame(minHeight: 150, maxHeight: 230)
                     .padding(4)
                     .glassInset(cornerRadius: 6)
 
                 HStack(spacing: 8) {
-                    Button("Import .txt...") {
-                        importTxtIntoEditor()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                    if !isCreatingNewBank && !selectedBankName.isEmpty {
-                        Button(isDeletingBank ? "Deleting..." : "Delete Bank...") {
-                            pendingDeletion = coordinator.wildcardBanks.first {
-                                $0.id == selectedBankName.lowercased()
+                    Menu("Bank Actions") {
+                        Button("Import .txt...") { importTxtIntoEditor() }
+                            .disabled(isLoadingBank || isSavingBank || isSyncingBank)
+                        if !isCreatingNewBank && !selectedBankName.isEmpty {
+                            Divider()
+                            Button("Delete Bank...", role: .destructive) {
+                                pendingDeletion = coordinator.wildcardBanks.first {
+                                    $0.id == selectedBankName.lowercased()
+                                }
                             }
+                            .disabled(isDeletingBank || isSavingBank || isSyncingBank
+                                || coordinator.wildcardStore.isBundledBank(name: selectedBankName))
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(isDeletingBank || isSavingBank || isSyncingBank
-                            || coordinator.wildcardStore.isBundledBank(name: selectedBankName))
                     }
+                    .controlSize(.regular)
+                    .frame(minHeight: 44)
 
-                    Spacer()
+                    Spacer(minLength: 4)
 
                     Button(isSavingBank ? "Saving..." : "Save Local") {
                         saveCurrentBank()
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    .tint(effectiveBankName.isEmpty || coordinator.wildcardStore.isBundledBank(name: effectiveBankName) ? .gray : .accentColor)
+                    .controlSize(.regular)
+                    .frame(minHeight: 44)
                     .disabled(isSavingBank || isDeletingBank || isSyncingBank || isLoadingBank
-                        || effectiveBankName.isEmpty
+                        || bankLoadError != nil || effectiveBankName.isEmpty
                         || coordinator.wildcardStore.isBundledBank(name: effectiveBankName))
 
                     Button(isSyncingBank ? "Syncing..." : "Sync...") {
@@ -313,9 +388,10 @@ struct WildcardsStudioView: View {
                         )
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .controlSize(.regular)
+                    .frame(minHeight: 44)
                     .disabled(isSavingBank || isDeletingBank || isSyncingBank || isLoadingBank
-                        || effectiveBankName.isEmpty
+                        || bankLoadError != nil || effectiveBankName.isEmpty
                         || coordinator.wildcardStore.isBundledBank(name: effectiveBankName))
                 }
                 if coordinator.wildcardStore.isBundledBank(name: effectiveBankName) {
@@ -353,23 +429,35 @@ struct WildcardsStudioView: View {
         editTags = bank.tags.joined(separator: ", ")
         editItemsText = bank.items.joined(separator: "\n")
         lastRolledSample = ""
+        bankLoadError = nil
+        bankLoadRequestID = UUID()
+        isLoadingBank = false
 
         if !bank.isFullDetailLoaded || bank.items.count < bank.count {
             isLoadingBank = true
             let bankName = bank.name
+            let requestID = bankLoadRequestID
             Task {
-                defer { isLoadingBank = false }
-                if let full = await coordinator.loadWildcardBankDetail(name: bankName),
-                   selectedBankName.lowercased() == bankName.lowercased() {
+                let full = await coordinator.loadWildcardBankDetail(name: bankName)
+                guard requestID == bankLoadRequestID,
+                      selectedBankName.lowercased() == bankName.lowercased() else { return }
+                isLoadingBank = false
+                if let full, full.isFullDetailLoaded, full.items.count >= full.count {
                     editDescription = full.description
                     editTags = full.tags.joined(separator: ", ")
                     editItemsText = full.items.joined(separator: "\n")
+                    bankLoadError = nil
+                } else {
+                    bankLoadError = "Complete bank unavailable. The displayed entries may be a preview. Refresh DexDiffusion before editing or syncing."
                 }
             }
         }
     }
 
     private func startNewBank() {
+        bankLoadRequestID = UUID()
+        bankLoadError = nil
+        isLoadingBank = false
         isCreatingNewBank = true
         selectedBankName = ""
         editName = ""
@@ -501,7 +589,7 @@ private struct WildcardDeleteConfirmationSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 470)
+        .frame(minWidth: 340, idealWidth: 440, maxWidth: 470)
     }
 }
 
@@ -553,6 +641,6 @@ private struct WildcardSyncConfirmationSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 470)
+        .frame(minWidth: 340, idealWidth: 440, maxWidth: 470)
     }
 }

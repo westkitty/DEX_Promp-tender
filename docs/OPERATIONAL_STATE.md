@@ -30,3 +30,13 @@
 - **Packaging:** `./scripts/build_app.sh` built `dist/DexPromptender.app` and passed `plutil` and `codesign --verify --deep --strict` on Big Mac. This is a local ignored build artifact, not a GitHub release or an installed MacBook update.
 - **Remaining verification:** Real menu-bar sheet clicking, focus/accessibility and visual correctness have not been exercised on the user's MacBook (DEX//REACH MacBook aiAccess is off); do not claim GUI QA or deployment complete.
 - **Reference:** `docs/WILDCARD_SAFETY.md`.
+
+## Impeccable UI/UX Gauntlet Implementation — 2026-11-14
+
+- **Scope:** Implemented all 15 agreed UI/UX findings QW-01..05, HP-01..06, ST-01..04, based on commit 97d0c3569139ab46f99cf68054270688178adb87. Native app source only; no DexCraft or Image_Gen changes.
+- **Protected behavior:** Preserved Mix modes, compiler IR, local/remote wildcard confirmation, separate-image guards, offline operation, Keychain provider gating, and paid Serve preview. Stale-result gating now additionally protects Copy/Serve and rechecks at execution.
+- **Visual system:** Centralized PromptenderTheme and glass modifiers; native menu for compact navigation; focus/VoiceOver labels on icon controls; neutral disabled actions; screen-bounded popover and single-column result layout; Reduce Motion support; readable error receipts and complete request inspection.
+- **Performance:** Debounced appearance setting writes, flushed at app termination; cached user-selected artwork by modified path. No model binaries added.
+- **Evidence:** Native debug build passed; 36/36 Swift Testing cases across seven suites passed. Big Mac offscreen render probes passed at 480, 720, and 960 logical-point widths, plus Wildcards, Settings, and Serve views. Release bundle build and codesign outcome must be verified from the final packaging log, not inferred from debug tests. Impeccable's web-only detector is inapplicable to a SwiftUI/AppKit interface.
+- **Not yet verified:** Actual MacBook installation, live UI clicking, VoiceOver focus traversal, custom-image contrast in every appearance, and notarization. No live destructive wildcard API calls or paid API requests were made.
+- **Detail:** docs/IMPECCABLE_IMPLEMENTATION.md

@@ -335,6 +335,8 @@ final class WildcardStore {
         return matches
     }
 
+    func wildcardBackupDirectoryURL() -> URL { backupDirectory() }
+
     private func backupDirectory() -> URL {
         localDirURL.deletingLastPathComponent().appendingPathComponent("WildcardBackups", isDirectory: true)
     }

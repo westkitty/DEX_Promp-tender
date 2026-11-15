@@ -5,24 +5,20 @@ struct RootPopoverView: View {
     @ObservedObject var coordinator: PromptenderCoordinator
     @ObservedObject var appearance: AppearanceSettingsStore
 
-    private let collapsedWidth: CGFloat = 480
-    private let expandedWidth: CGFloat = 960
-    private let height: CGFloat = 660
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Group {
-            if viewModel.isDetachedWindowActive {
-                GeometryReader { geometry in
-                    content(width: geometry.size.width, height: geometry.size.height, isDetached: true)
-                }
-                .frame(minWidth: 880, minHeight: 580)
-            } else {
-                let width = viewModel.isResultPanelVisible ? expandedWidth : collapsedWidth
-                content(width: width, height: height, isDetached: false)
-                    .frame(width: width, height: height)
-            }
+        GeometryReader { geometry in
+            content(
+                width: geometry.size.width,
+                height: geometry.size.height,
+                isDetached: viewModel.isDetachedWindowActive
+            )
         }
-        .animation(.easeInOut(duration: 0.22), value: viewModel.isResultPanelVisible)
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: 0.20),
+            value: viewModel.isResultPanelVisible
+        )
     }
 
     private var backgroundLayer: some View {
@@ -105,7 +101,7 @@ struct RootPopoverView: View {
     private func loadCustomNSImage(path: String) -> NSImage? {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, FileManager.default.fileExists(atPath: trimmed) else { return nil }
-        return NSImage(contentsOfFile: trimmed)
+        return appearance.cachedImage(at: trimmed)
     }
 
     @ViewBuilder
@@ -113,8 +109,11 @@ struct RootPopoverView: View {
         ZStack {
             backgroundLayer
 
-            MixingRoomView(viewModel: viewModel, coordinator: coordinator, appearance: appearance, isDetached: isDetached)
-                .frame(width: width, height: height)
+            MixingRoomView(
+                viewModel: viewModel, coordinator: coordinator, appearance: appearance,
+                isDetached: isDetached, availableWidth: width
+            )
+            .frame(width: width, height: height)
         }
         .frame(width: width, height: height)
     }

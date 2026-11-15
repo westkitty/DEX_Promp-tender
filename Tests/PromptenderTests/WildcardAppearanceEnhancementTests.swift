@@ -239,6 +239,8 @@ struct WildcardAppearanceEnhancementTests {
         #expect(!store.hasLocalBank(name: "custom_neon"))
         #expect(transport.banks["custom_neon"] != nil)
         #expect(coordinator.statusBanner.contains("incomplete"))
+        #expect(coordinator.latestWildcardOperationReceipt?.failed.isEmpty == false)
+        #expect(coordinator.latestWildcardOperationReceipt?.completed.contains("local") == true)
         let backups = appDir.appendingPathComponent("WildcardBackups", isDirectory: true)
         let files = try FileManager.default.contentsOfDirectory(atPath: backups.path)
         #expect(files.contains(where: { $0.hasPrefix("local-") }))
@@ -498,6 +500,7 @@ struct WildcardAppearanceEnhancementTests {
         store.settings.isBackdropImageEnabled = true
         store.settings.backdropBlur = 12.0
         store.settings.customBackdropImagePath = "/tmp/sample-backdrop.png"
+        store.flushPendingSave()
 
         let reloaded = AppearanceSettingsStore(fileURL: fileURL)
         #expect(reloaded.settings.watermarkOpacity == 0.25)

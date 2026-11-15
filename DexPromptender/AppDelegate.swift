@@ -6,6 +6,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let expandedSize = NSSize(width: 960, height: 660)
     private let detachedSize = NSSize(width: 1080, height: 720)
 
+    private func visibleWorkspace() -> NSRect {
+        statusItem?.button?.window?.screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+    }
+
+    private func fittedPopoverSize(expanded: Bool) -> NSSize {
+        let visible = visibleWorkspace()
+        let size = expanded ? expandedSize : collapsedSize
+        return NSSize(
+            width: min(size.width, max(320, visible.width - 24)),
+            height: min(size.height, max(320, visible.height - 24))
+        )
+    }
+
     private var statusItem: NSStatusItem!
     private var statusMenu: NSMenu!
     private var toggleDrawerMenuItem: NSMenuItem!
@@ -52,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { appearanceStore.flushPendingSave() }
         if let globalMonitor {
             NSEvent.removeMonitor(globalMonitor)
         }
@@ -63,8 +79,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func setupPopover() {
         popover = NSPopover()
         popover.behavior = .transient
-        popover.animates = true
-        popover.contentSize = collapsedSize
+        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.contentSize = fittedPopoverSize(expanded: false)
 
         let rootView = RootPopoverView(viewModel: viewModel, coordinator: coordinator, appearance: appearanceStore)
         popover.contentViewController = NSHostingController(rootView: rootView)
@@ -270,8 +286,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             popover.performClose(nil)
         }
 
-        let minWidth: CGFloat = 880
-        let rect = NSRect(x: 0, y: 0, width: detachedSize.width, height: detachedSize.height)
+        let visible = visibleWorkspace()
+        let initialWidth = min(detachedSize.width, max(340, visible.width - 24))
+        let initialHeight = min(detachedSize.height, max(340, visible.height - 24))
+        let minWidth = min(CGFloat(640), initialWidth)
+        let rect = NSRect(x: 0, y: 0, width: initialWidth, height: initialHeight)
         let panel = NSPanel(
             contentRect: rect,
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -287,7 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.titlebarAppearsTransparent = true
         panel.collectionBehavior = [.fullScreenAuxiliary, .canJoinAllSpaces]
-        panel.minSize = NSSize(width: minWidth, height: 580)
+        panel.minSize = NSSize(width: minWidth, height: min(CGFloat(500), initialHeight))
         panel.delegate = self
         panel.isReleasedWhenClosed = false
         panel.contentViewController = NSHostingController(
@@ -365,11 +384,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func updateDetachedWindowMinimumSize(expanded: Bool) {
         guard let window = detachedWindow else { return }
-        window.minSize = NSSize(width: 880, height: 580)
+        let visible = visibleWorkspace()
+        window.minSize = NSSize(
+            width: min(640, max(340, visible.width - 24)),
+            height: min(500, max(340, visible.height - 24))
+        )
     }
 
     private func resizePopover(expanded: Bool, animated: Bool) {
-        let targetSize = expanded ? expandedSize : collapsedSize
+        let targetSize = fittedPopoverSize(expanded: expanded)
 
         guard popover.isShown,
               let window = popover.contentViewController?.view.window
@@ -380,15 +403,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         var frame = window.frame
         let deltaWidth = targetSize.width - frame.width
-        frame.origin.x -= deltaWidth
+        let visible = visibleWorkspace()
+        frame.origin.x = min(
+            max(frame.origin.x - deltaWidth, visible.minX + 12),
+            visible.maxX - targetSize.width - 12
+        )
+        frame.origin.y = min(
+            max(frame.origin.y, visible.minY + 12),
+            visible.maxY - targetSize.height - 12
+        )
         frame.size = targetSize
 
         popover.contentSize = targetSize
 
-        if animated {
+        if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.22
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.duration = 0.20
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 window.animator().setFrame(frame, display: true)
             }
         } else {

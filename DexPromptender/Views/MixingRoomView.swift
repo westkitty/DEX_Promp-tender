@@ -27,6 +27,17 @@ struct MixingRoomView: View {
     @ObservedObject var coordinator: PromptenderCoordinator
     @ObservedObject var appearance: AppearanceSettingsStore
     let isDetached: Bool
+    let availableWidth: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var resultIsCurrent: Bool {
+        coordinator.isLastResultCurrent(
+            rawInput: viewModel.roughInput,
+            variables: viewModel.variableValues,
+            legacyOptions: viewModel.options
+        )
+    }
 
     @State private var activeSection: PromptenderWorkspaceSection = .bar
     @State private var outputTab: CompiledOutputTab = .compiled
@@ -45,7 +56,7 @@ struct MixingRoomView: View {
 
             sectionNavigationBar
 
-            if isDetached {
+            if isDetached && availableWidth >= 820 {
                 detachedMixingRoomBody
             } else {
                 compactBarBody
@@ -54,7 +65,10 @@ struct MixingRoomView: View {
             statusFooterBar
         }
         .sheet(item: $coordinator.pendingServeConfirmation) { confirmation in
-            ServeConfirmationSheet(coordinator: coordinator, confirmation: confirmation)
+            ServeConfirmationSheet(
+                coordinator: coordinator, confirmation: confirmation,
+                viewModel: viewModel
+            )
         }
     }
 
@@ -95,7 +109,12 @@ struct MixingRoomView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .frame(minWidth: 44, minHeight: 44)
                 .help(viewModel.isResultPanelVisible ? "Collapse Result Drawer" : "Show Compiled Output")
+                .accessibilityLabel(
+                    viewModel.isResultPanelVisible ? "Hide compiled output" : "Show compiled output"
+                )
+                .accessibilityHint("Toggles the compiled-output panel")
             }
 
             Button {
@@ -106,35 +125,66 @@ struct MixingRoomView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .frame(minWidth: 44, minHeight: 44)
             .help(isDetached ? "Return to Menu Bar" : "Open Detached Mixing Room")
+            .accessibilityLabel(
+                isDetached ? "Return to menu bar" : "Open detached Mixing Room"
+            )
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
 
     private var sectionNavigationBar: some View {
-        HStack(spacing: 6) {
-            ForEach(PromptenderWorkspaceSection.allCases) { section in
-                let isSelected = activeSection == section
-                Button {
-                    activeSection = section
-                } label: {
-                    Text(section.rawValue)
-                        .font(.caption.weight(isSelected ? .semibold : .regular))
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(isSelected ? Color.cyan.opacity(0.22) : Color.clear)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(isSelected ? Color.cyan.opacity(0.45) : Color.white.opacity(0.10), lineWidth: 0.75)
-                        )
+        Group {
+            if !isDetached || availableWidth < 760 {
+                HStack {
+                    Menu {
+                        ForEach(PromptenderWorkspaceSection.allCases) { section in
+                            Button {
+                                activeSection = section
+                            } label: {
+                                if activeSection == section {
+                                    Label(section.rawValue, systemImage: "checkmark")
+                                } else {
+                                    Text(section.rawValue)
+                                }
+                            }
+                        }
+                    } label: {
+                        Label(activeSection.rawValue, systemImage: "square.grid.2x2")
+                    }
+                    .accessibilityLabel("Workspace section")
+                    .accessibilityValue(activeSection.rawValue)
+                    Spacer()
+                    Text(activeSection == .bar ? "Draft and compile" : activeSection.rawValue)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
+            } else {
+                HStack(spacing: 6) {
+                    ForEach(PromptenderWorkspaceSection.allCases) { section in
+                        let isSelected = activeSection == section
+                        Button {
+                            activeSection = section
+                        } label: {
+                            Text(section.rawValue)
+                                .font(.caption.weight(isSelected ? .semibold : .regular))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(isSelected ? Color.accentColor.opacity(0.22) : .clear)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(section.rawValue)
+                        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                    }
+                    Spacer()
+                }
             }
-            Spacer()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -160,7 +210,28 @@ struct MixingRoomView: View {
 
     @ViewBuilder
     private var compactBarBody: some View {
-        HStack(spacing: 0) {
+        if availableWidth >= 820 {
+            HStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        leftColumnContent
+                    }
+                    .padding(12)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if viewModel.isResultPanelVisible {
+                    Divider()
+                    compiledOutputPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+        } else if viewModel.isResultPanelVisible {
+            compiledOutputPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.opacity)
+        } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     leftColumnContent
@@ -168,16 +239,6 @@ struct MixingRoomView: View {
                 .padding(12)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if viewModel.isResultPanelVisible {
-                Divider()
-                    .overlay(Color.white.opacity(0.14))
-
-                compiledOutputPane
-                    .frame(width: 470)
-                    .frame(maxHeight: .infinity)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
         }
     }
 
@@ -327,6 +388,18 @@ struct MixingRoomView: View {
             }
 
             if let result = coordinator.lastResult {
+                if !resultIsCurrent {
+                    HStack(spacing: 8) {
+                        Label("Output out of date", systemImage: "arrow.clockwise.circle")
+                            .font(.callout.weight(.semibold))
+                        Spacer()
+                        Button("Mix Updated Draft") { performMixPrompt() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    Text("Your draft, recipe, settings, references, or wildcards changed. Mix again before copying or serving.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
                 HStack(spacing: 6) {
                     Text(result.modelID)
                         .font(.caption2.monospaced())
@@ -344,7 +417,11 @@ struct MixingRoomView: View {
                         compiledPromptView(result)
                     case .payload:
                         APIPayloadView(result: result) {
-                            coordinator.copyPayloadJSON()
+                            coordinator.copyPayloadJSON(
+                                rawInput: viewModel.roughInput,
+                                variables: viewModel.variableValues,
+                                legacyOptions: viewModel.options
+                            )
                         }
                     case .proof:
                         ProofReportView(report: result.proofReport)
@@ -449,16 +526,26 @@ struct MixingRoomView: View {
     private func serveBar(result: CompilationResult) -> some View {
         HStack(spacing: 8) {
             Button("Copy Prompt") {
-                coordinator.copyCompiledPrompt()
+                coordinator.copyCompiledPrompt(
+                    rawInput: viewModel.roughInput,
+                    variables: viewModel.variableValues,
+                    legacyOptions: viewModel.options
+                )
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
+            .disabled(!resultIsCurrent)
 
             Button("Copy JSON") {
-                coordinator.copyPayloadJSON()
+                coordinator.copyPayloadJSON(
+                    rawInput: viewModel.roughInput,
+                    variables: viewModel.variableValues,
+                    legacyOptions: viewModel.options
+                )
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .disabled(!resultIsCurrent)
 
             Button("Save Prompt...") {
                 savePromptTitle = ""
@@ -475,14 +562,24 @@ struct MixingRoomView: View {
                 Divider()
 
                 Button("Submit to Local DexDiffusion Worker...") {
-                    coordinator.requestExternalServe(channel: .submitDexDiffusionControlled)
+                    coordinator.requestExternalServe(
+                        channel: .submitDexDiffusionControlled,
+                        rawInput: viewModel.roughInput,
+                        variables: viewModel.variableValues,
+                        legacyOptions: viewModel.options
+                    )
                 }
-                .disabled(result.target != .dexDiffusionImage || result.proofReport.hasBlockingIssues)
+                .disabled(!resultIsCurrent || result.target != .dexDiffusionImage || result.proofReport.hasBlockingIssues)
 
                 Button("Submit to Authorized Provider API...") {
-                    coordinator.requestExternalServe(channel: .submitAuthorizedProviderAPI)
+                    coordinator.requestExternalServe(
+                        channel: .submitAuthorizedProviderAPI,
+                        rawInput: viewModel.roughInput,
+                        variables: viewModel.variableValues,
+                        legacyOptions: viewModel.options
+                    )
                 }
-                .disabled(ProviderAPIRouter.providerKey(for: result.target) == nil || result.proofReport.hasBlockingIssues)
+                .disabled(!resultIsCurrent || ProviderAPIRouter.providerKey(for: result.target) == nil || result.proofReport.hasBlockingIssues)
             }
             .menuStyle(.borderedButton)
             .controlSize(.small)
@@ -496,9 +593,12 @@ struct MixingRoomView: View {
                 .fill(coordinator.dexDiffusionCapabilities?.reachable == true ? Color.green : Color.cyan)
                 .frame(width: 6, height: 6)
             Text(coordinator.statusBanner)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .accessibilityLabel("Status: \(coordinator.statusBanner)")
             Spacer()
             Text("v\(coordinator.activeRecipe.version) · Offline-First")
                 .font(.caption2.monospaced())

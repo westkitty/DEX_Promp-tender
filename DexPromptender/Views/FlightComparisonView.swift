@@ -125,6 +125,9 @@ struct FlightComparisonView: View {
                         .glassInset(cornerRadius: 6)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(recipe.name)
+                    .accessibilityValue(isSelected ? "Selected" : "Not selected")
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
         }
@@ -154,6 +157,13 @@ struct FlightComparisonView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(6)
                 .glassInset(cornerRadius: 6)
+
+            DisclosureGroup("Full compiled prompt") {
+                Text(entry.result.compiledPrompt)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             if let neg = entry.result.negativePrompt, !neg.isEmpty {
                 Text("Negative: \(neg)")

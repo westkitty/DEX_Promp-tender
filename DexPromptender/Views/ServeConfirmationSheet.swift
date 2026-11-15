@@ -3,6 +3,15 @@ import SwiftUI
 struct ServeConfirmationSheet: View {
     @ObservedObject var coordinator: PromptenderCoordinator
     let confirmation: PendingServeConfirmation
+    @ObservedObject var viewModel: PromptEngineViewModel
+
+    private var isCurrent: Bool {
+        coordinator.isLastResultCurrent(
+            rawInput: viewModel.roughInput,
+            variables: viewModel.variableValues,
+            legacyOptions: viewModel.options
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -18,6 +27,13 @@ struct ServeConfirmationSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+            }
+
+            if !isCurrent {
+                Label("Draft changed since confirmation was opened. Mix again before submission.",
+                      systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .font(.callout.weight(.semibold))
             }
 
             Text(confirmation.billingNotice)
@@ -73,28 +89,32 @@ struct ServeConfirmationSheet: View {
 
                 Button(coordinator.isSubmittingServe ? "Submitting..." : "Confirm & Submit Request") {
                     Task {
-                        await coordinator.confirmAndExecutePendingServe()
+                        await coordinator.confirmAndExecutePendingServe(
+                            rawInput: viewModel.roughInput,
+                            variables: viewModel.variableValues,
+                            legacyOptions: viewModel.options
+                        )
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(coordinator.isSubmittingServe || confirmation.result.proofReport.hasBlockingIssues)
+                .disabled(!isCurrent || coordinator.isSubmittingServe || confirmation.result.proofReport.hasBlockingIssues)
             }
         }
         .padding(16)
-        .frame(width: 540)
+        .frame(minWidth: 340, idealWidth: 540, maxWidth: 540)
     }
 
     private func detailRow(_ label: String, value: String) -> some View {
-        HStack {
+        VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(.caption2.weight(.semibold))
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 85, alignment: .leading)
             Text(value)
-                .font(.system(.caption2, design: .monospaced))
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-                .lineLimit(1)
-            Spacer()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

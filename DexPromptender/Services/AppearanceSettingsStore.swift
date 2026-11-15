@@ -79,8 +79,15 @@ struct AppearanceSettings: Codable, Equatable {
 @MainActor
 final class AppearanceSettingsStore: ObservableObject {
     @Published var settings: AppearanceSettings {
-        didSet { persist() }
+        didSet { scheduleSave() }
     }
+    @Published private(set) var persistenceError: String?
+    private var pendingSave: Task<Void, Never>?
+    private let imageCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 3
+        return cache
+    }()
 
     private let fileURL: URL
     private let fileManager = FileManager.default
@@ -111,10 +118,45 @@ final class AppearanceSettingsStore: ObservableObject {
         settings = .default
     }
 
+    // UI responds immediately; only persistence is coalesced. Explicit flush
+    // is used when quitting to preserve the most recent slider value.
+    private func scheduleSave() {
+        pendingSave?.cancel()
+        pendingSave = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            self?.persist()
+        }
+    }
+
+    func flushPendingSave() {
+        pendingSave?.cancel()
+        pendingSave = nil
+        persist()
+    }
+
+    func cachedImage(at path: String) -> NSImage? {
+        let clean = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, fileManager.fileExists(atPath: clean) else { return nil }
+        let modified = (try? fileManager.attributesOfItem(atPath: clean)[.modificationDate] as? Date)
+            ?? Date.distantPast
+        let cacheKey = "\(clean)#\(modified.timeIntervalSince1970)" as NSString
+        if let existing = imageCache.object(forKey: cacheKey) { return existing }
+        guard let decoded = NSImage(contentsOfFile: clean) else { return nil }
+        imageCache.setObject(decoded, forKey: cacheKey)
+        return decoded
+    }
+
     private func persist() {
-        try? fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let data = try? encoder.encode(settings) {
-            try? data.write(to: fileURL, options: .atomic)
+        do {
+            try fileManager.createDirectory(
+                at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            let encoded = try encoder.encode(settings)
+            try encoded.write(to: fileURL, options: .atomic)
+            persistenceError = nil
+        } catch {
+            persistenceError = error.localizedDescription
         }
     }
 

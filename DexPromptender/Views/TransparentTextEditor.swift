@@ -25,8 +25,10 @@ struct TransparentTextEditor: NSViewRepresentable {
         textView.allowsUndo = true
         textView.drawsBackground = false
         textView.backgroundColor = .clear
-        textView.textColor = .white
-        textView.insertionPointColor = .white
+        textView.textColor = .labelColor
+        textView.insertionPointColor = .textColor
+        textView.setAccessibilityLabel("Raw prompt")
+        textView.setAccessibilityHelp("Type or paste the prompt to compile.")
         textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.delegate = context.coordinator
